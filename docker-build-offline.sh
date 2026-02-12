@@ -46,22 +46,33 @@ echo "🐳 检查 Docker 镜像..."
 if docker images | grep -q "alpine.*latest"; then
     echo "✅ 找到本地 alpine 镜像"
 else
-    echo "⚠️  未找到 alpine 镜像，尝试使用 busybox..."
-    if docker images | grep -q "busybox"; then
-        echo "✅ 找到 busybox 镜像，将使用它"
-        ALPINE_IMAGE="busybox:latest"
+    echo "⚠️  未找到 alpine 镜像，尝试从项目内加载..."
+    
+    # 检查是否有打包的镜像文件
+    if [ -f "alpine-latest.tar" ]; then
+        echo "📦 发现打包的镜像文件，正在加载..."
+        docker load -i alpine-latest.tar
+        
+        if [ $? -eq 0 ] && docker images | grep -q "alpine.*latest"; then
+            echo "✅ Alpine 镜像加载成功！"
+        else
+            echo "❌ 镜像加载失败"
+            exit 1
+        fi
     else
-        echo "❌ 未找到任何可用的基础镜像"
-        echo ""
-        echo "💡 解决方案："
-        echo "   1. 检查是否有其他基础镜像: docker images"
-        echo "   2. 或手动下载 alpine 镜像文件（如果有的话）"
-        echo "   3. 或使用系统包管理器安装 Docker 镜像"
-        echo ""
-        echo "   如果系统有网络但 DNS 有问题，尝试："
-        echo "   - 修改 /etc/resolv.conf 使用其他 DNS（如 8.8.8.8）"
-        echo "   - 或使用代理"
-        exit 1
+        echo "⚠️  未找到打包的镜像文件，尝试使用 busybox..."
+        if docker images | grep -q "busybox"; then
+            echo "✅ 找到 busybox 镜像，将使用它"
+            ALPINE_IMAGE="busybox:latest"
+        else
+            echo "❌ 未找到任何可用的基础镜像"
+            echo ""
+            echo "💡 解决方案："
+            echo "   1. 运行: ./load-alpine-image.sh 加载打包的镜像"
+            echo "   2. 或检查是否有其他基础镜像: docker images"
+            echo "   3. 或使用系统包管理器安装 Docker 镜像"
+            exit 1
+        fi
     fi
 fi
 

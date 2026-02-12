@@ -55,9 +55,13 @@ docker-compose up -d
 - [Docker 网络问题解决方案](./README-DOCKER-NETWORK.md)
 
 **快速解决方案：**
-1. **DNS 问题**：`sudo ./fix-dns-and-mirror.sh` （修复 DNS + 镜像加速器）
-2. **离线构建**（最可靠）：`./docker-build-offline.sh` （使用本地镜像）
+1. **离线构建**（最可靠，推荐）：`./docker-build-offline.sh` 
+   - 使用项目内打包的 alpine 镜像，无需网络
+   - 自动检测并加载镜像
+2. **DNS 问题**：`sudo ./fix-dns-and-mirror.sh` （修复 DNS + 镜像加速器）
 3. **本地编译**：`./docker-build-local.sh` （需要拉取 alpine 镜像）
+
+**注意**：项目内已包含 `alpine-latest.tar` 镜像文件，离线构建时会自动加载。
 
 **常用 Docker 命令：**
 

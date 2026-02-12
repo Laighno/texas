@@ -1,0 +1,39 @@
+# 构建产物
+poker-server
+*.exe
+*.dll
+*.so
+*.dylib
+
+# 测试文件（保留测试脚本，忽略测试输出）
+*.test
+test_output/
+test_results/
+
+# 日志文件
+*.log
+
+# 临时文件
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# IDE 配置
+.vscode/
+.idea/
+*.code-workspace
+
+# OS 文件
+.DS_Store
+Thumbs.db
+
+# Docker 临时文件
+.dockerignore.backup
+Dockerfile.local
+Dockerfile.offline
+
+# 注意：alpine-latest.tar 应该包含在版本控制中
+# 如果需要忽略，取消下面的注释：
+# alpine-latest.tar

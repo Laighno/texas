@@ -4,8 +4,7 @@ test_*.go
 test_*.sh
 *.test
 
-# 忽略构建产物
-poker-server
+# 忽略构建产物（但保留 poker-server 用于 Docker 构建）
 *.exe
 *.dll
 *.so
@@ -34,6 +33,9 @@ poker-server
 *.temp
 
 # 忽略 Docker 相关（避免递归）
-Dockerfile
-docker-compose.yml
+Dockerfile*
+docker-compose*.yml
 .dockerignore
+
+# 保留 alpine-latest.tar（需要用于构建）
+# !alpine-latest.tar
