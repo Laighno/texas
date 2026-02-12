@@ -130,7 +130,7 @@ docker rm texas-poker-server 2>/dev/null
 
 # 启动容器
 echo "🚀 启动容器..."
-docker run -d -p 8080:8080 --name texas-poker-server --restart unless-stopped texas-poker:offline
+docker run -d -p 8085:8080 --name texas-poker-server --restart unless-stopped texas-poker:offline
 
 if [ $? -eq 0 ]; then
     echo ""
