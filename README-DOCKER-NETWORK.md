@@ -50,9 +50,22 @@ sudo systemctl restart docker
 docker info | grep -A 10 "Registry Mirrors"
 ```
 
-### 方案 2：使用国内镜像源版本（最简单）
+### 方案 2：配置镜像加速器后使用标准构建（推荐）
 
-**一键启动（推荐）：**
+**步骤：**
+```bash
+# 1. 配置镜像加速器（只需一次）
+sudo ./setup-docker-mirror.sh
+
+# 2. 使用标准构建
+docker-compose up -d --build
+```
+
+配置后，Docker 会自动通过镜像加速器拉取官方镜像，无需修改 Dockerfile。
+
+### 方案 3：使用镜像加速器版本（如果方案2失败）
+
+**一键启动：**
 ```bash
 ./docker-start-mirror.sh
 ```
@@ -62,7 +75,7 @@ docker info | grep -A 10 "Registry Mirrors"
 docker-compose -f docker-compose.mirror.yml up -d --build
 ```
 
-这个版本使用阿里云镜像源，更适合国内网络环境，无需配置 Docker daemon。
+注意：此方案也需要先配置镜像加速器才能正常工作。
 
 ### 方案 3：手动拉取并重命名镜像
 

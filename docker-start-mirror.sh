@@ -30,7 +30,34 @@ fi
 
 echo "✅ Docker 环境检查通过"
 echo ""
-echo "📦 使用国内镜像源构建（适合网络受限环境）"
+
+# 检查 Docker 镜像加速器配置
+echo "🔍 检查 Docker 镜像加速器配置..."
+if ! docker info 2>/dev/null | grep -q "Registry Mirrors"; then
+    echo "⚠️  警告: 未检测到 Docker 镜像加速器配置"
+    echo ""
+    echo "📝 正在配置 Docker 镜像加速器..."
+    if [ "$EUID" -eq 0 ]; then
+        # 如果已经是 root，直接配置
+        if [ -f "./setup-docker-mirror.sh" ]; then
+            ./setup-docker-mirror.sh
+        fi
+    else
+        echo "   需要 root 权限来配置镜像加速器"
+        echo "   请运行: sudo ./setup-docker-mirror.sh"
+        echo ""
+        read -p "是否继续构建（可能失败）？(y/n) " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            exit 1
+        fi
+    fi
+else
+    echo "✅ 已检测到 Docker 镜像加速器配置"
+fi
+
+echo ""
+echo "📦 使用镜像加速器构建（适合网络受限环境）"
 echo ""
 
 # 使用国内镜像源版本的 docker-compose 文件
@@ -40,7 +67,7 @@ if [ ! -f "docker-compose.mirror.yml" ]; then
 fi
 
 # 构建并启动容器
-echo "📦 正在构建 Docker 镜像（使用国内镜像源）..."
+echo "📦 正在构建 Docker 镜像（通过镜像加速器）..."
 $DOCKER_COMPOSE -f docker-compose.mirror.yml build
 
 if [ $? -ne 0 ]; then

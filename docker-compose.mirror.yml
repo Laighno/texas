@@ -5,6 +5,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.mirror
+      # 注意：需要先配置 Docker 镜像加速器
+      # 运行: sudo ./setup-docker-mirror.sh
     container_name: texas-poker-server
     ports:
       - "8080:8080"

@@ -1,6 +1,4 @@
-# 使用国内镜像源的 Dockerfile
-# 注意：此文件使用官方镜像名，但需要配置 Docker 镜像加速器才能正常工作
-# 如果未配置镜像加速器，请先运行: sudo ./setup-docker-mirror.sh
+# 直接使用官方镜像的 Dockerfile（需要配置镜像加速器）
 # 多阶段构建 Dockerfile
 # 第一阶段：构建阶段
 FROM golang:1.21-alpine AS builder
@@ -8,7 +6,7 @@ FROM golang:1.21-alpine AS builder
 # 设置工作目录
 WORKDIR /app
 
-# 配置 Go 代理（使用国内镜像）
+# 配置 Go 代理（使用国内镜像加速 Go 模块下载）
 ENV GOPROXY=https://goproxy.cn,direct
 ENV GO111MODULE=on
 
