@@ -37,3 +37,4 @@ Dockerfile.offline
 # 注意：alpine-latest.tar 应该包含在版本控制中
 # 如果需要忽略，取消下面的注释：
 # alpine-latest.tar
+poker-server-test
