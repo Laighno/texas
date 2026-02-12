@@ -53,7 +53,10 @@ docker-compose up -d
 **⚠️ 如果遇到网络超时问题**（无法拉取 Docker 镜像），请参考：
 - [快速修复指南](./QUICK-FIX.md) - **推荐先看这个**
 - [Docker 网络问题解决方案](./README-DOCKER-NETWORK.md)
-- **最简单方案**：运行 `sudo ./setup-docker-mirror.sh` 配置镜像加速器，然后使用标准 `docker-compose up -d` 构建
+
+**快速解决方案：**
+1. **配置镜像加速器**：`sudo ./fix-docker-mirror.sh`
+2. **或使用本地编译方案**（最可靠）：`./docker-build-local.sh`
 
 **常用 Docker 命令：**
 

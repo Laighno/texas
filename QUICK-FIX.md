@@ -1,6 +1,14 @@
 # 快速修复指南
 
-## 问题：镜像源不存在
+## 问题 1：镜像拉取超时
+
+如果遇到以下错误：
+```
+dial tcp: i/o timeout
+failed to resolve source metadata
+```
+
+## 问题 2：镜像源不存在
 
 如果遇到以下错误：
 ```
@@ -74,9 +82,11 @@ docker run -d -p 8080:8080 --name texas-poker texas-poker:local
 
 ## 推荐流程
 
-1. **首先尝试配置镜像加速器**：
+### 方案 A：配置镜像加速器（推荐）
+
+1. **强制配置镜像加速器**：
    ```bash
-   sudo ./setup-docker-mirror.sh
+   sudo ./fix-docker-mirror.sh
    ```
 
 2. **然后使用标准构建**：
@@ -87,10 +97,39 @@ docker run -d -p 8080:8080 --name texas-poker texas-poker:local
 3. **如果还是失败，检查网络**：
    ```bash
    # 测试镜像加速器
-   docker pull golang:1.21-alpine
+   docker pull alpine:latest
    
    # 如果成功，说明配置生效
    ```
+
+### 方案 B：本地编译方案（最可靠）
+
+如果镜像加速器配置后仍然失败，使用本地编译：
+
+```bash
+./docker-build-local.sh
+```
+
+这个方案：
+- ✅ 在本地编译 Go 程序（无需 Docker 构建镜像）
+- ✅ 只拉取 alpine:latest（很小的镜像）
+- ✅ 即使 alpine 拉取失败，也可以手动拉取后重试
+
+### 方案 C：完全离线方案
+
+如果完全无法访问 Docker Hub：
+
+```bash
+# 1. 本地编译
+go build -o poker-server main.go game.go
+
+# 2. 手动拉取 alpine（通过其他方式获取）
+# 或使用已有镜像
+
+# 3. 构建
+docker build -f Dockerfile.local -t texas-poker:local .
+docker run -d -p 8080:8080 --name texas-poker-server texas-poker:local
+```
 
 ## 验证配置
 
