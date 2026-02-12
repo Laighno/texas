@@ -1,0 +1,6 @@
+FROM alpine:latest
+RUN apk --no-cache add ca-certificates 2>/dev/null || true
+WORKDIR /app
+COPY poker-server index.html style.css app.js ./
+EXPOSE 8080
+CMD ["./poker-server"]

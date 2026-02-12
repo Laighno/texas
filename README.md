@@ -55,8 +55,9 @@ docker-compose up -d
 - [Docker 网络问题解决方案](./README-DOCKER-NETWORK.md)
 
 **快速解决方案：**
-1. **配置镜像加速器**：`sudo ./fix-docker-mirror.sh`
-2. **或使用本地编译方案**（最可靠）：`./docker-build-local.sh`
+1. **DNS 问题**：`sudo ./fix-dns-and-mirror.sh` （修复 DNS + 镜像加速器）
+2. **离线构建**（最可靠）：`./docker-build-offline.sh` （使用本地镜像）
+3. **本地编译**：`./docker-build-local.sh` （需要拉取 alpine 镜像）
 
 **常用 Docker 命令：**
 

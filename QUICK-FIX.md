@@ -115,20 +115,44 @@ docker run -d -p 8080:8080 --name texas-poker texas-poker:local
 - ✅ 只拉取 alpine:latest（很小的镜像）
 - ✅ 即使 alpine 拉取失败，也可以手动拉取后重试
 
-### 方案 C：完全离线方案
+### 方案 C：DNS 问题修复
 
-如果完全无法访问 Docker Hub：
+如果遇到 DNS 解析失败（no such host）：
 
+```bash
+# 修复 DNS 并配置镜像加速器
+sudo ./fix-dns-and-mirror.sh
+```
+
+这个脚本会：
+- 添加备用 DNS 服务器（8.8.8.8, 114.114.114.114）
+- 配置多个镜像加速器
+- 在 Docker 中配置 DNS
+
+### 方案 D：完全离线方案（最可靠）
+
+如果网络完全无法访问外部资源：
+
+```bash
+# 使用离线构建方案（使用本地已有的镜像）
+./docker-build-offline.sh
+```
+
+这个方案：
+- ✅ 在本地编译 Go 程序
+- ✅ 使用本地已有的 Docker 镜像（alpine 或 busybox）
+- ✅ 完全不依赖外部网络
+
+如果本地也没有镜像，可以：
 ```bash
 # 1. 本地编译
 go build -o poker-server main.go game.go
 
-# 2. 手动拉取 alpine（通过其他方式获取）
-# 或使用已有镜像
+# 2. 如果有其他方式获取 alpine 镜像文件，可以导入：
+# docker load < alpine.tar
 
-# 3. 构建
-docker build -f Dockerfile.local -t texas-poker:local .
-docker run -d -p 8080:8080 --name texas-poker-server texas-poker:local
+# 3. 或直接运行（不使用 Docker）：
+./poker-server
 ```
 
 ## 验证配置
