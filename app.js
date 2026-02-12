@@ -974,6 +974,9 @@ function updateCommunityCards(cards) {
     if (!cards) {
         cards = [];
     }
+    
+    let newCardIndex = 0; // 新牌计数器，用于错开动画时间
+    
     for (let i = 0; i < 5; i++) {
         const cardSlot = document.getElementById(`card${i}`);
         if (!cardSlot) {
@@ -984,34 +987,43 @@ function updateCommunityCards(cards) {
         const hadCard = cardSlot.innerHTML !== '';
         
         if (i < cards.length && cards[i]) {
-            // 有牌，显示或更新
             const cardHTML = createCardHTML(cards[i]);
             if (!hadCard) {
-                // 如果之前没有牌，添加发牌动画
-                cardSlot.style.opacity = '0';
-                cardSlot.style.transform = 'scale(0.5) rotateY(180deg)';
-                
-                setTimeout(() => {
-                    cardSlot.innerHTML = cardHTML;
-                    cardSlot.style.transition = 'all 0.6s ease-out';
-                    cardSlot.style.opacity = '1';
-                    cardSlot.style.transform = 'scale(1) rotateY(0deg)';
-                }, i * 200); // 每张牌延迟200ms
-                
-                setTimeout(() => {
-                    cardSlot.style.transition = '';
-                }, 600 + i * 200);
+                // 新牌发牌动画
+                cardSlot.classList.remove('slot-waiting');
+                cardSlot.innerHTML = cardHTML;
+                const cardEl = cardSlot.querySelector('.card');
+                if (cardEl) {
+                    cardEl.style.animationDelay = (newCardIndex * 0.18) + 's';
+                    cardEl.classList.add('deal-community');
+                    // 发牌落地后添加金光
+                    const glowDelay = newCardIndex * 180 + 550;
+                    setTimeout(() => {
+                        cardEl.classList.add('card-land-glow');
+                    }, glowDelay);
+                    // 动画结束后清理
+                    cardEl.addEventListener('animationend', function handler(e) {
+                        if (e.animationName === 'landGlow') {
+                            cardEl.classList.remove('deal-community', 'card-land-glow');
+                            cardEl.style.animationDelay = '';
+                            cardEl.removeEventListener('animationend', handler);
+                        }
+                    });
+                }
+                newCardIndex++;
             } else {
                 // 直接更新（结算时）
                 cardSlot.innerHTML = cardHTML;
-                cardSlot.style.opacity = '1';
-                cardSlot.style.transform = '';
             }
         } else {
             // 没有牌，清空显示
             cardSlot.innerHTML = '';
-            cardSlot.style.opacity = '';
-            cardSlot.style.transform = '';
+            // 下一张将要发的牌槽 - 添加等待呼吸灯
+            if (i === cards.length && cards.length > 0 && cards.length < 5) {
+                cardSlot.classList.add('slot-waiting');
+            } else {
+                cardSlot.classList.remove('slot-waiting');
+            }
         }
     }
 }
@@ -1123,14 +1135,10 @@ function updatePlayersArea(players, currentTurn, dealerIndex) {
                 }
             });
         } else if (playerHand.length === 2 && !player.folded) {
-            // 游戏进行中且不是自己的牌：显示背面
+            // 游戏进行中且不是自己的牌：显示背面（带滑入动画）
             cardsHTML = `
-                <div class="card" style="background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); color: white;">
-                    <div style="font-size: 0.8em;">🂠</div>
-                </div>
-                <div class="card" style="background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); color: white;">
-                    <div style="font-size: 0.8em;">🂠</div>
-                </div>
+                <div class="card card-back deal-back"></div>
+                <div class="card card-back deal-back" style="animation-delay:0.1s"></div>
             `;
         }
 
@@ -1143,6 +1151,23 @@ function updatePlayersArea(players, currentTurn, dealerIndex) {
         `;
 
         playersArea.appendChild(seat);
+        
+        // 结算时：给翻开的牌添加动画
+        if (isSettlement && !isFoldedInSettlement && playerHand.length === 2) {
+            const cardEls = seat.querySelectorAll('.player-seat-cards .card');
+            cardEls.forEach((cardEl, ci) => {
+                // 翻牌动画 + 错开延迟
+                cardEl.classList.add('reveal-flip');
+                cardEl.style.animationDelay = (ci * 0.15) + 's';
+                // 赢家的牌额外加金色闪烁
+                if (settlementData && settlementData.winner && 
+                    player.id === settlementData.winner.id) {
+                    setTimeout(() => {
+                        cardEl.classList.add('winner-highlight');
+                    }, 700 + ci * 150);
+                }
+            });
+        }
     });
 }
 
@@ -1250,38 +1275,39 @@ function updatePlayerInfo(player, room) {
         playerHand[0].suit && playerHand[0].rank && 
         playerHand[1].suit && playerHand[1].rank) {
         console.log('✅ 显示手牌:', playerHand);
-        // 如果之前没有牌，添加发牌动画
         const hadCards = handCard0.innerHTML !== '' && handCard1.innerHTML !== '';
         
         if (!hadCards) {
-            // 发牌动画
-            handCard0.style.opacity = '0';
-            handCard1.style.opacity = '0';
-            handCard0.style.transform = 'translateY(-50px) rotateY(180deg)';
-            handCard1.style.transform = 'translateY(-50px) rotateY(180deg)';
+            // 发牌动画 - 两张牌先后飞入
+            handCard0.innerHTML = createCardHTML(playerHand[0]);
+            handCard1.innerHTML = createCardHTML(playerHand[1]);
             
-            setTimeout(() => {
-                const card0HTML = createCardHTML(playerHand[0]);
-                const card1HTML = createCardHTML(playerHand[1]);
-                console.log('设置手牌HTML');
-                handCard0.innerHTML = card0HTML;
-                handCard1.innerHTML = card1HTML;
-                
-                // 动画效果
-                handCard0.style.transition = 'all 0.6s ease-out';
-                handCard1.style.transition = 'all 0.6s ease-out';
-                setTimeout(() => {
-                    handCard0.style.opacity = '1';
-                    handCard1.style.opacity = '1';
-                    handCard0.style.transform = 'translateY(0) rotateY(0deg)';
-                    handCard1.style.transform = 'translateY(0) rotateY(0deg)';
-                }, 50);
-            }, 100);
+            const card0El = handCard0.querySelector('.card');
+            const card1El = handCard1.querySelector('.card');
             
-            setTimeout(() => {
-                handCard0.style.transition = '';
-                handCard1.style.transition = '';
-            }, 700);
+            if (card0El) {
+                card0El.classList.add('deal-hand');
+                // 落地金光
+                setTimeout(() => card0El.classList.add('card-land-glow'), 700);
+                card0El.addEventListener('animationend', function handler(e) {
+                    if (e.animationName === 'landGlow') {
+                        card0El.classList.remove('deal-hand', 'card-land-glow');
+                        card0El.removeEventListener('animationend', handler);
+                    }
+                });
+            }
+            if (card1El) {
+                card1El.style.animationDelay = '0.2s';
+                card1El.classList.add('deal-hand');
+                setTimeout(() => card1El.classList.add('card-land-glow'), 900);
+                card1El.addEventListener('animationend', function handler(e) {
+                    if (e.animationName === 'landGlow') {
+                        card1El.classList.remove('deal-hand', 'card-land-glow');
+                        card1El.style.animationDelay = '';
+                        card1El.removeEventListener('animationend', handler);
+                    }
+                });
+            }
         } else {
             // 直接更新
             handCard0.innerHTML = createCardHTML(playerHand[0]);
@@ -1455,11 +1481,13 @@ function createCardHTML(card) {
     
     const isRed = card.suit === 'hearts' || card.suit === 'diamonds';
     const colorClass = isRed ? 'red' : 'black';
+    const suit = suitSymbols[card.suit];
     
     return `
         <div class="card ${colorClass}">
-            <div class="card-rank">${card.rank}</div>
-            <div class="card-suit">${suitSymbols[card.suit]}</div>
+            <div class="card-tl">${card.rank}<br>${suit}</div>
+            <div class="card-center">${suit}</div>
+            <div class="card-br">${card.rank}<br>${suit}</div>
         </div>
     `;
 }
