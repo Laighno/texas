@@ -110,6 +110,56 @@ ports:
 
 ## 故障排查
 
+### Docker 镜像拉取失败 / 网络超时
+
+如果遇到以下错误：
+```
+failed to solve: golang:1.21-alpine: failed to resolve source metadata
+dial tcp: i/o timeout
+```
+
+**解决方案 1：配置 Docker 镜像加速器（推荐）**
+
+运行配置脚本：
+```bash
+sudo ./setup-docker-mirror.sh
+```
+
+或手动配置，编辑 `/etc/docker/daemon.json`：
+```json
+{
+  "registry-mirrors": [
+    "https://docker.mirrors.ustc.edu.cn",
+    "https://hub-mirror.c.163.com",
+    "https://mirror.baidubce.com"
+  ]
+}
+```
+
+然后重启 Docker：
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart docker
+```
+
+**解决方案 2：使用国内镜像源版本**
+
+使用专门为国内网络优化的 Dockerfile：
+```bash
+docker-compose -f docker-compose.mirror.yml up -d --build
+```
+
+**解决方案 3：手动拉取镜像**
+
+```bash
+# 使用镜像加速器拉取
+docker pull docker.mirrors.ustc.edu.cn/library/golang:1.21-alpine
+docker tag docker.mirrors.ustc.edu.cn/library/golang:1.21-alpine golang:1.21-alpine
+
+docker pull docker.mirrors.ustc.edu.cn/library/alpine:latest
+docker tag docker.mirrors.ustc.edu.cn/library/alpine:latest alpine:latest
+```
+
 ### 端口被占用
 
 如果 8080 端口被占用，可以：

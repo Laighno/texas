@@ -50,6 +50,10 @@ docker-compose up -d
 
 服务器将在 `http://localhost:8080` 启动
 
+**⚠️ 如果遇到网络超时问题**（无法拉取 Docker 镜像），请参考：
+- [Docker 网络问题解决方案](./README-DOCKER-NETWORK.md)
+- 或运行：`sudo ./setup-docker-mirror.sh` 配置镜像加速器
+
 **常用 Docker 命令：**
 
 ```bash

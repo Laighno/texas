@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# 德州扑克 Docker 启动脚本
+# 使用国内镜像源的 Docker 启动脚本
 
 echo "=========================================="
-echo "  德州扑克服务器 Docker 启动脚本"
+echo "  德州扑克服务器 Docker 启动脚本（国内镜像源版）"
 echo "=========================================="
 echo ""
 
@@ -30,34 +30,31 @@ fi
 
 echo "✅ Docker 环境检查通过"
 echo ""
+echo "📦 使用国内镜像源构建（适合网络受限环境）"
+echo ""
 
-# 检查 Docker 镜像加速器配置
-echo "🔍 检查 Docker 镜像加速器配置..."
-if ! docker info 2>/dev/null | grep -q "Registry Mirrors"; then
-    echo "⚠️  警告: 未检测到 Docker 镜像加速器配置"
-    echo "   如果遇到网络问题，建议配置镜像加速器："
-    echo "   运行: sudo ./setup-docker-mirror.sh"
-    echo "   或手动配置: https://docs.docker.com/registry/recipes/mirror/"
-    echo ""
-    read -p "是否继续构建？(y/n) " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        exit 1
-    fi
+# 使用国内镜像源版本的 docker-compose 文件
+if [ ! -f "docker-compose.mirror.yml" ]; then
+    echo "❌ 错误: 未找到 docker-compose.mirror.yml 文件"
+    exit 1
 fi
 
 # 构建并启动容器
-echo "📦 正在构建 Docker 镜像..."
-$DOCKER_COMPOSE build
+echo "📦 正在构建 Docker 镜像（使用国内镜像源）..."
+$DOCKER_COMPOSE -f docker-compose.mirror.yml build
 
 if [ $? -ne 0 ]; then
     echo "❌ 构建失败，请检查错误信息"
+    echo ""
+    echo "💡 提示：如果仍然失败，可以尝试："
+    echo "   1. 配置 Docker 镜像加速器: sudo ./setup-docker-mirror.sh"
+    echo "   2. 检查网络连接"
     exit 1
 fi
 
 echo ""
 echo "🚀 正在启动服务器..."
-$DOCKER_COMPOSE up -d
+$DOCKER_COMPOSE -f docker-compose.mirror.yml up -d
 
 if [ $? -ne 0 ]; then
     echo "❌ 启动失败，请检查错误信息"
@@ -72,8 +69,8 @@ echo ""
 echo "🌐 访问地址: http://localhost:8080"
 echo ""
 echo "📋 常用命令:"
-echo "   查看日志: $DOCKER_COMPOSE logs -f"
-echo "   停止服务: $DOCKER_COMPOSE down"
-echo "   重启服务: $DOCKER_COMPOSE restart"
+echo "   查看日志: $DOCKER_COMPOSE -f docker-compose.mirror.yml logs -f"
+echo "   停止服务: $DOCKER_COMPOSE -f docker-compose.mirror.yml down"
+echo "   重启服务: $DOCKER_COMPOSE -f docker-compose.mirror.yml restart"
 echo ""
 echo "=========================================="
