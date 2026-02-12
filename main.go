@@ -38,26 +38,37 @@ type Card struct {
 	Rank string `json:"rank"` // 点数: 2-10, J, Q, K, A
 }
 
+// 玩家状态
+const (
+	PlayerStatusSpectating = "spectating" // 观战状态
+	PlayerStatusPlaying    = "playing"    // 游戏中
+)
+
 // 玩家
 type Player struct {
-	ID       string          `json:"id"`
-	Name     string          `json:"name"`
-	Conn     *websocket.Conn `json:"-"`
-	Hand     []Card          `json:"hand"`
-	Chips    int             `json:"chips"`
-	Bet      int             `json:"bet"`
-	Folded   bool            `json:"folded"`
-	IsDealer bool            `json:"isDealer"`
-	IsSmall  bool            `json:"isSmall"`
-	IsBig    bool            `json:"isBig"`
-	AllIn    bool            `json:"allIn"`
+	ID            string          `json:"id"`
+	Name          string          `json:"name"`
+	Conn          *websocket.Conn `json:"-"`
+	Hand          []Card          `json:"hand"`
+	Chips         int             `json:"chips"`
+	Bet           int             `json:"bet"`
+	Folded        bool            `json:"folded"`
+	IsDealer      bool            `json:"isDealer"`
+	IsSmall       bool            `json:"isSmall"`
+	IsBig         bool            `json:"isBig"`
+	AllIn         bool            `json:"allIn"`
+	Status        string          `json:"status"`        // spectating 或 playing
+	LastHeartbeat time.Time       `json:"-"`             // 最后心跳时间
+	HeartbeatTimer *time.Timer    `json:"-"`             // 心跳超时定时器
+	HeartbeatTimeout bool         `json:"-"`             // 心跳超时标记（游戏结束后移入观战）
 }
 
 // 游戏房间
 type GameRoom struct {
 	ID                string       `json:"id"`
 	Players           []*Player    `json:"players"`
-	WaitingPlayers    []*Player    `json:"waitingPlayers"` // 等待加入的玩家列表（游戏进行中时）
+	Spectators        []*Player    `json:"spectators"`        // 观战玩家列表
+	WaitingPlayers    []*Player    `json:"waitingPlayers"`    // 等待加入的玩家列表（游戏进行中时）
 	CommunityCards    []Card       `json:"communityCards"`
 	Pot               int          `json:"pot"`
 	CurrentBet        int          `json:"currentBet"`
@@ -68,8 +79,13 @@ type GameRoom struct {
 	BettingStartIndex int          `json:"bettingStartIndex"` // 当前下注轮开始行动的玩家索引
 	TurnTimer         *time.Timer  `json:"-"`                 // 当前回合的超时定时器
 	Deck              []Card       `json:"-"`
+	BuyHandCount      map[string]int `json:"buyHandCount"`    // 玩家买一手次数（按昵称）
 	Mutex             sync.RWMutex `json:"-"`
 }
+
+// 筹码存储（按房间ID+玩家昵称）
+var chipsStorage = make(map[string]map[string]int) // roomID -> playerName -> chips
+var chipsMutex sync.RWMutex
 
 // 用于JSON序列化的房间数据
 func (room *GameRoom) ToJSON() map[string]interface{} {
@@ -93,6 +109,18 @@ func (room *GameRoom) ToJSON() map[string]interface{} {
 			"isSmall":  p.IsSmall,
 			"isBig":    p.IsBig,
 			"allIn":    p.AllIn,
+			"status":   p.Status,
+		}
+	}
+
+	// 创建观战玩家数据的副本
+	spectatorsData := make([]map[string]interface{}, len(room.Spectators))
+	for i, p := range room.Spectators {
+		spectatorsData[i] = map[string]interface{}{
+			"id":     p.ID,
+			"name":   p.Name,
+			"chips":  p.Chips,
+			"status": p.Status,
 		}
 	}
 
@@ -100,15 +128,17 @@ func (room *GameRoom) ToJSON() map[string]interface{} {
 	waitingPlayersData := make([]map[string]interface{}, len(room.WaitingPlayers))
 	for i, p := range room.WaitingPlayers {
 		waitingPlayersData[i] = map[string]interface{}{
-			"id":    p.ID,
-			"name":  p.Name,
-			"chips": p.Chips,
+			"id":     p.ID,
+			"name":   p.Name,
+			"chips":  p.Chips,
+			"status": p.Status,
 		}
 	}
 
 	result := map[string]interface{}{
 		"id":             room.ID,
 		"players":        playersData,
+		"spectators":     spectatorsData,
 		"waitingPlayers": waitingPlayersData,
 		"communityCards": room.CommunityCards,
 		"pot":            room.Pot,
@@ -162,12 +192,25 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	playerID := generateID()
 	player := &Player{
-		ID:    playerID,
-		Conn:  conn,
-		Chips: INITIAL_CHIPS,
+		ID:            playerID,
+		Conn:          conn,
+		Chips:         INITIAL_CHIPS, // 初始筹码（一手）
+		Status:        PlayerStatusSpectating,
+		LastHeartbeat: time.Now(),
 	}
 
 	log.Printf("新玩家连接成功: ID=%s, 地址=%s", playerID, r.RemoteAddr)
+
+	// 设置连接读写超时
+	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	conn.SetPongHandler(func(string) error {
+		player.LastHeartbeat = time.Now()
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		return nil
+	})
+
+	// 启动心跳检测
+	go startHeartbeatCheck(player)
 
 	for {
 		var msg Message
@@ -177,6 +220,10 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			removePlayer(player)
 			break
 		}
+
+		// 更新心跳时间
+		player.LastHeartbeat = time.Now()
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 
 		log.Printf("收到消息 (玩家=%s): 类型=%s", playerID, msg.Type)
 		handleMessage(player, &msg)
@@ -190,12 +237,19 @@ func handleMessage(player *Player, msg *Message) {
 		joinRoom(player, msg)
 	case "createRoom":
 		createRoom(player, msg)
+	case "joinTable":
+		joinTable(player, msg)
 	case "action":
 		handleAction(player, msg)
 	case "startGame":
 		startGame(player, msg)
 	case "buyHand":
 		buyHand(player, msg)
+	case "getBuyHandStats":
+		getBuyHandStats(player, msg)
+	case "heartbeat":
+		// 心跳消息，已在连接层处理
+		player.LastHeartbeat = time.Now()
 	default:
 		log.Printf("未知消息类型: %s", msg.Type)
 	}
@@ -216,19 +270,26 @@ func createRoom(player *Player, msg *Message) {
 	}
 
 	roomID := generateID()
+	
+	// 加载玩家筹码
+	player.Chips = loadPlayerChips(roomID, player.Name)
+	player.Status = PlayerStatusSpectating // 新玩家默认观战状态
+
 	room := &GameRoom{
 		ID:             roomID,
-		Players:        []*Player{player},
+		Players:        []*Player{},
+		Spectators:     []*Player{player}, // 创建者先进入观战状态
 		WaitingPlayers: []*Player{},
 		GamePhase:      "waiting",
 		CommunityCards: []Card{},
+		BuyHandCount:   make(map[string]int), // 初始化买一手次数统计
 	}
 
 	roomsMutex.Lock()
 	rooms[roomID] = room
 	roomsMutex.Unlock()
 
-	log.Printf("房间创建成功: 房间ID=%s, 玩家=%s(%s)", roomID, player.Name, player.ID)
+	log.Printf("房间创建成功: 房间ID=%s, 玩家=%s(%s), 筹码=%d", roomID, player.Name, player.ID, player.Chips)
 
 	// 发送房间信息（包含完整房间数据）
 	sendMessage(player, Message{
@@ -236,6 +297,7 @@ func createRoom(player *Player, msg *Message) {
 		Data: map[string]interface{}{
 			"roomId": roomID,
 			"room":   room.ToJSON(),
+			"isSpectating": true,
 		},
 	})
 }
@@ -286,158 +348,102 @@ func joinRoom(player *Player, msg *Message) {
 
 	room.Mutex.Lock()
 
-	// 检查游戏状态
-	if room.GamePhase != "waiting" {
-		// 游戏正在进行中，将玩家加入等待列表
-		if len(room.Players)+len(room.WaitingPlayers) >= MAX_PLAYERS {
-			room.Mutex.Unlock()
-			sendMessage(player, Message{
-				Type: "error",
-				Data: map[string]string{"message": "房间已满"},
-			})
-			return
-		}
-
-		// 检查玩家是否已在等待列表中
-		for _, p := range room.WaitingPlayers {
-			if p.ID == player.ID {
-				room.Mutex.Unlock()
-				// 玩家已在等待列表中，发送房间信息
-				sendMessage(player, Message{
-					Type: "roomJoined",
-					Data: map[string]interface{}{
-						"room":      room.ToJSON(),
-						"isWaiting": true,
-					},
-				})
-				return
-			}
-		}
-
-		// 检查玩家是否已在游戏中
-		for _, p := range room.Players {
-			if p.ID == player.ID {
-				room.Mutex.Unlock()
-				// 玩家已在游戏中，发送房间信息
-				sendMessage(player, Message{
-					Type: "roomJoined",
-					Data: map[string]interface{}{
-						"room":      room.ToJSON(),
-						"isWaiting": false,
-					},
-				})
-				return
-			}
-		}
-
-		// 将玩家加入等待列表
-		room.WaitingPlayers = append(room.WaitingPlayers, player)
-		waitingCount := len(room.WaitingPlayers)
-		room.Mutex.Unlock()
-
-		log.Printf("玩家 %s 加入等待列表，房间 %s，等待玩家数: %d", player.Name, roomID, waitingCount)
-
-		// 发送房间信息给新加入的玩家（告知需要等待）
-		sendMessage(player, Message{
-			Type: "roomJoined",
-			Data: map[string]interface{}{
-				"room":      room.ToJSON(),
-				"isWaiting": true,
-				"message":   "游戏正在进行中，请等待下一局开始",
-			},
-		})
-		return
-	}
-
-	// 游戏在等待状态，可以直接加入
-	if len(room.Players) >= MAX_PLAYERS {
+	// 检查是否已有同名玩家
+	if hasPlayerWithName(room, player.Name, player.ID) {
 		room.Mutex.Unlock()
 		sendMessage(player, Message{
 			Type: "error",
-			Data: map[string]string{"message": "房间已满"},
+			Data: map[string]string{"message": "房间中已有同名玩家，请使用不同的昵称"},
 		})
 		return
 	}
 
-	// 检查玩家是否已在游戏中
-	for _, p := range room.Players {
+	// 检查玩家是否已在观战列表中（重连）
+	for i, p := range room.Spectators {
 		if p.ID == player.ID {
+			// 重连，更新连接
+			room.Spectators[i].Conn = player.Conn
+			room.Spectators[i].LastHeartbeat = time.Now()
 			room.Mutex.Unlock()
-			// 玩家已在游戏中，发送房间信息
+			
+			// 发送房间信息
 			sendMessage(player, Message{
 				Type: "roomJoined",
 				Data: map[string]interface{}{
-					"room":      room.ToJSON(),
-					"isWaiting": false,
+					"room":         room.ToJSON(),
+					"isSpectating": true,
 				},
 			})
 			return
 		}
 	}
 
-	// 新玩家永远插入在枪口位置（大盲注的下一位，即DealerIndex+3的位置）
-	// 枪口位置 = 大盲注的下一位 = (DealerIndex + 3) % (当前玩家数 + 1)
-	// 如果还没有开始游戏，DealerIndex可能是0，插入到位置3（枪口位置）
-	insertIndex := 0
-	if len(room.Players) > 0 {
-		// 枪口位置 = 大盲注的下一位 = DealerIndex + 3
-		// 如果DealerIndex是0，枪口位置是3
-		// 如果DealerIndex是1，枪口位置是4，以此类推
-		// 插入位置应该是 (DealerIndex + 3) % (len(room.Players) + 1)
-		// 但为了确保插入在正确位置，我们计算相对于当前玩家数的位置
-		insertIndex = (room.DealerIndex + 3) % (len(room.Players) + 1)
-		// 确保索引不超出范围
-		if insertIndex > len(room.Players) {
-			insertIndex = len(room.Players)
+	// 检查玩家是否已在游戏中（重连）
+	for i, p := range room.Players {
+		if p.ID == player.ID {
+			// 重连，更新连接
+			room.Players[i].Conn = player.Conn
+			room.Players[i].LastHeartbeat = time.Now()
+			room.Mutex.Unlock()
+			
+			// 发送房间信息
+			sendMessage(player, Message{
+				Type: "roomJoined",
+				Data: map[string]interface{}{
+					"room":         room.ToJSON(),
+					"isSpectating": false,
+				},
+			})
+			return
 		}
 	}
-	// 在指定位置插入新玩家
-	room.Players = append(room.Players, nil)
-	copy(room.Players[insertIndex+1:], room.Players[insertIndex:])
-	room.Players[insertIndex] = player
-	log.Printf("新玩家 %s 插入到枪口位置（索引: %d），房间 %s，当前玩家数: %d", player.Name, insertIndex, room.ID, len(room.Players))
-	playerCount := len(room.Players)
+
+	// 新玩家：加载筹码并加入观战状态
+	player.Chips = loadPlayerChips(roomID, player.Name)
+	player.Status = PlayerStatusSpectating
+	
+	// 添加到观战列表
+	room.Spectators = append(room.Spectators, player)
+	
+	spectators := make([]*Player, len(room.Spectators))
+	copy(spectators, room.Spectators)
+	players := make([]*Player, len(room.Players))
+	copy(players, room.Players)
 	room.Mutex.Unlock()
+
+	log.Printf("玩家 %s 加入房间 %s 观战，筹码=%d", player.Name, roomID, player.Chips)
 
 	// 发送房间信息给新加入的玩家
 	sendMessage(player, Message{
 		Type: "roomJoined",
 		Data: map[string]interface{}{
-			"room": room.ToJSON(),
+			"room":         room.ToJSON(),
+			"isSpectating": true,
+			"message":      "您已进入观战状态，点击'上桌'按钮加入游戏",
 		},
 	})
 
-	// 如果游戏在等待状态，广播玩家加入消息（在锁外发送）
-	// 如果游戏正在进行中，不广播，避免影响当前游戏
-	room.Mutex.Lock()
-	gameInProgress := room.GamePhase != "waiting"
-	room.Mutex.Unlock()
-
-	if !gameInProgress {
-		// 游戏在等待状态，可以广播
-		players := make([]*Player, len(room.Players))
-		copy(players, room.Players)
-		roomData := room.ToJSON()
-		broadcastMsg := Message{
-			Type: "playerJoined",
-			Data: map[string]interface{}{
-				"player": player,
-				"room":   roomData,
-			},
-		}
-		for _, p := range players {
-			if p.Conn != nil {
-				sendMessage(p, broadcastMsg)
-			}
-		}
-	} else {
-		// 游戏正在进行中，不广播，避免影响当前游戏
-		log.Printf("游戏正在进行中，新玩家 %s 加入但不广播，避免影响当前游戏", player.Name)
+	// 广播玩家加入消息
+	roomData := room.ToJSON()
+	broadcastMsg := Message{
+		Type: "playerJoined",
+		Data: map[string]interface{}{
+			"player": player,
+			"room":   roomData,
+		},
 	}
-
-	log.Printf("玩家 %s 加入房间 %s，当前玩家数: %d", player.Name, roomID, playerCount)
-
-	// 不再自动开始，需要手动点击开始按钮
+	
+	// 广播给所有玩家和观战者
+	for _, p := range players {
+		if p.Conn != nil {
+			sendMessage(p, broadcastMsg)
+		}
+	}
+	for _, p := range spectators {
+		if p.Conn != nil {
+			sendMessage(p, broadcastMsg)
+		}
+	}
 }
 
 func startGame(player *Player, msg *Message) {
@@ -584,12 +590,14 @@ func startNewHand(room *GameRoom) {
 	}
 
 	// 准备广播消息（需要在锁外发送）
-	// 先复制玩家列表和等待列表（必须在锁内复制）
+	// 先复制玩家列表、观战列表和等待列表（必须在锁内复制）
 	players := make([]*Player, len(room.Players))
 	copy(players, room.Players)
+	spectators := make([]*Player, len(room.Spectators))
+	copy(spectators, room.Spectators)
 	waitingPlayers := make([]*Player, len(room.WaitingPlayers))
 	copy(waitingPlayers, room.WaitingPlayers)
-	log.Printf("玩家列表已复制，房间 %s，玩家数: %d，等待玩家数: %d", room.ID, len(players), len(waitingPlayers))
+	log.Printf("玩家列表已复制，房间 %s，玩家数: %d，观战数: %d，等待玩家数: %d", room.ID, len(players), len(spectators), len(waitingPlayers))
 
 	// 释放写锁，然后序列化数据
 	room.Mutex.Unlock()
@@ -612,6 +620,13 @@ func startNewHand(room *GameRoom) {
 			log.Printf("警告: 玩家 %s 连接为空，跳过", p.Name)
 		}
 	}
+	// 给观战者发送游戏开始消息（可以看到游戏状态）
+	for i, p := range spectators {
+		if p.Conn != nil {
+			log.Printf("发送游戏开始消息给观战者 %d: %s (ID: %s)", i, p.Name, p.ID)
+			sendMessage(p, msg)
+		}
+	}
 	// 给等待列表中的玩家发送等待消息（不参与当前游戏）
 	for i, p := range waitingPlayers {
 		if p.Conn != nil {
@@ -628,7 +643,7 @@ func startNewHand(room *GameRoom) {
 		}
 	}
 
-	log.Printf("✅ 游戏已开始，房间 %s，已广播给 %d 个玩家，%d 个等待玩家收到等待消息", room.ID, len(players), len(waitingPlayers))
+	log.Printf("✅ 游戏已开始，房间 %s，已广播给 %d 个玩家，%d 个观战者，%d 个等待玩家收到等待消息", room.ID, len(players), len(spectators), len(waitingPlayers))
 }
 
 func handleAction(player *Player, msg *Message) {
@@ -784,9 +799,11 @@ func handleAction(player *Player, msg *Message) {
 	}
 
 	// 准备广播消息（需要在锁外发送）
-	// 包括等待列表中的玩家，让他们也能看到游戏状态
+	// 包括等待列表和观战列表中的玩家，让他们也能看到游戏状态
 	players := make([]*Player, len(room.Players))
 	copy(players, room.Players)
+	spectators := make([]*Player, len(room.Spectators))
+	copy(spectators, room.Spectators)
 	waitingPlayers := make([]*Player, len(room.WaitingPlayers))
 	copy(waitingPlayers, room.WaitingPlayers)
 	room.Mutex.Unlock()
@@ -803,7 +820,13 @@ func handleAction(player *Player, msg *Message) {
 			sendMessage(p, broadcastMsg)
 		}
 	}
-	// 也广播给等待列表中的玩家（观战者）
+	// 广播给观战者
+	for _, p := range spectators {
+		if p.Conn != nil {
+			sendMessage(p, broadcastMsg)
+		}
+	}
+	// 也广播给等待列表中的玩家
 	for _, p := range waitingPlayers {
 		if p.Conn != nil {
 			sendMessage(p, broadcastMsg)
@@ -827,10 +850,53 @@ func nextTurn(room *GameRoom) bool {
 	if len(activePlayers) == 1 {
 		log.Printf("只剩一个未弃牌玩家 %s，自动获胜，房间 %s", activePlayers[0].Name, room.ID)
 		activePlayers[0].Chips += room.Pot
+		// 保存获胜者筹码
+		savePlayerChips(room.ID, activePlayers[0].Name, activePlayers[0].Chips)
 		room.GamePhase = "showdown"
+		
+		// 保存所有玩家的筹码
+		for _, p := range room.Players {
+			savePlayerChips(room.ID, p.Name, p.Chips)
+		}
+		
+		// 检查并处理心跳超时的玩家（游戏结束后移入观战）
+		timeoutPlayers := []*Player{}
+		for _, p := range room.Players {
+			if p.HeartbeatTimeout {
+				timeoutPlayers = append(timeoutPlayers, p)
+			}
+		}
+		
+		// 将心跳超时的玩家移入观战
+		for _, p := range timeoutPlayers {
+			log.Printf("游戏结束，将心跳超时的玩家 %s 移入观战", p.Name)
+			// 从游戏玩家列表移除
+			for i, player := range room.Players {
+				if player.ID == p.ID {
+					room.Players = append(room.Players[:i], room.Players[i+1:]...)
+					break
+				}
+			}
+			// 添加到观战列表（如果不在）
+			inSpectators := false
+			for _, sp := range room.Spectators {
+				if sp.ID == p.ID {
+					inSpectators = true
+					break
+				}
+			}
+			if !inSpectators {
+				p.Status = PlayerStatusSpectating
+				p.HeartbeatTimeout = false
+				room.Spectators = append(room.Spectators, p)
+			}
+		}
+		
 		// 准备广播消息（在释放锁之前复制所有需要的数据）
 		players := make([]*Player, len(room.Players))
 		copy(players, room.Players)
+		spectatorsForGameEnd := make([]*Player, len(room.Spectators))
+		copy(spectatorsForGameEnd, room.Spectators)
 		// 复制等待列表中的玩家（观战者）- 必须在锁内复制
 		waitingPlayersForGameEnd := make([]*Player, len(room.WaitingPlayers))
 		copy(waitingPlayersForGameEnd, room.WaitingPlayers)
@@ -867,7 +933,13 @@ func nextTurn(room *GameRoom) bool {
 				sendMessage(p, msg)
 			}
 		}
-		// 也广播给等待列表中的玩家（观战者）
+		// 也广播给观战者
+		for _, p := range spectatorsForGameEnd {
+			if p.Conn != nil {
+				sendMessage(p, msg)
+			}
+		}
+		// 也广播给等待列表中的玩家
 		for _, p := range waitingPlayersForGameEnd {
 			if p.Conn != nil {
 				sendMessage(p, msg)
@@ -1197,6 +1269,28 @@ func nextTurn(room *GameRoom) bool {
 			p := room.Players[room.CurrentTurn]
 			// 找到下一个可以行动的玩家（未弃牌且未全押）
 			if !p.Folded && !p.AllIn {
+				// 检查玩家是否心跳超时，如果是，自动执行操作
+				if p.HeartbeatTimeout {
+					log.Printf("玩家 %s 轮到行动但心跳超时，自动执行操作", p.Name)
+					// 取消当前回合的超时定时器（如果存在）
+					if room.TurnTimer != nil {
+						room.TurnTimer.Stop()
+						room.TurnTimer = nil
+					}
+					// 检查是否可以过牌
+					if p.Bet == room.CurrentBet {
+						// 可以过牌，自动过牌
+						log.Printf("玩家 %s 自动过牌（下注已匹配）", p.Name)
+						// 过牌不需要改变状态，继续循环找下一个玩家
+						continue
+					} else {
+						// 无法过牌，自动弃牌
+						log.Printf("玩家 %s 无法过牌（需要跟注 %d），自动弃牌", p.Name, room.CurrentBet-p.Bet)
+						p.Folded = true
+						// 继续循环找下一个玩家
+						continue
+					}
+				}
 				// 启动超时定时器（1分钟）
 				room.startTurnTimer()
 				foundNextPlayer = true
@@ -1757,9 +1851,49 @@ func determineWinner(room *GameRoom) {
 		}
 	}
 
+	// 保存所有玩家的筹码
+	for _, p := range room.Players {
+		savePlayerChips(room.ID, p.Name, p.Chips)
+	}
+
+	// 检查并处理心跳超时的玩家（游戏结束后移入观战）
+	timeoutPlayers := []*Player{}
+	for _, p := range room.Players {
+		if p.HeartbeatTimeout {
+			timeoutPlayers = append(timeoutPlayers, p)
+		}
+	}
+	
+	// 将心跳超时的玩家移入观战
+	for _, p := range timeoutPlayers {
+		log.Printf("游戏结束，将心跳超时的玩家 %s 移入观战", p.Name)
+		// 从游戏玩家列表移除
+		for i, player := range room.Players {
+			if player.ID == p.ID {
+				room.Players = append(room.Players[:i], room.Players[i+1:]...)
+				break
+			}
+		}
+		// 添加到观战列表（如果不在）
+		inSpectators := false
+		for _, sp := range room.Spectators {
+			if sp.ID == p.ID {
+				inSpectators = true
+				break
+			}
+		}
+		if !inSpectators {
+			p.Status = PlayerStatusSpectating
+			p.HeartbeatTimeout = false
+			room.Spectators = append(room.Spectators, p)
+		}
+	}
+
 	// 准备广播消息（需要在锁外发送）
 	players := make([]*Player, len(room.Players))
 	copy(players, room.Players)
+	spectatorsForGameEnd := make([]*Player, len(room.Spectators))
+	copy(spectatorsForGameEnd, room.Spectators)
 	waitingPlayersForGameEnd := make([]*Player, len(room.WaitingPlayers))
 	copy(waitingPlayersForGameEnd, room.WaitingPlayers)
 	// 复制公共牌（必须在锁内复制）
@@ -1817,7 +1951,13 @@ func determineWinner(room *GameRoom) {
 			sendMessage(p, msg)
 		}
 	}
-	// 也广播给等待列表中的玩家（观战者）
+	// 也广播给观战者
+	for _, p := range spectatorsForGameEnd {
+		if p.Conn != nil {
+			sendMessage(p, msg)
+		}
+	}
+	// 也广播给等待列表中的玩家
 	for _, p := range waitingPlayersForGameEnd {
 		if p.Conn != nil {
 			sendMessage(p, msg)
@@ -1838,6 +1978,39 @@ func determineWinner(room *GameRoom) {
 			r.TurnTimer = nil
 			log.Printf("游戏结束，已停止超时定时器，房间 %s", r.ID)
 		}
+		
+		// 再次检查并处理心跳超时的玩家（确保所有超时玩家都被移入观战）
+		timeoutPlayers := []*Player{}
+		for _, p := range r.Players {
+			if p.HeartbeatTimeout {
+				timeoutPlayers = append(timeoutPlayers, p)
+			}
+		}
+		
+		for _, p := range timeoutPlayers {
+			log.Printf("游戏结束，将心跳超时的玩家 %s 移入观战", p.Name)
+			// 从游戏玩家列表移除
+			for i, player := range r.Players {
+				if player.ID == p.ID {
+					r.Players = append(r.Players[:i], r.Players[i+1:]...)
+					break
+				}
+			}
+			// 添加到观战列表（如果不在）
+			inSpectators := false
+			for _, sp := range r.Spectators {
+				if sp.ID == p.ID {
+					inSpectators = true
+					break
+				}
+			}
+			if !inSpectators {
+				p.Status = PlayerStatusSpectating
+				p.HeartbeatTimeout = false
+				r.Spectators = append(r.Spectators, p)
+			}
+		}
+		
 		r.GamePhase = "waiting"
 		// 重置游戏状态（为新一局游戏做准备）
 		r.Pot = 0
@@ -1977,6 +2150,14 @@ func findPlayerRoom(player *Player) *GameRoom {
 				return room
 			}
 		}
+		// 也检查观战列表
+		for i, p := range room.Spectators {
+			if p.ID == player.ID {
+				room.Mutex.RUnlock()
+				log.Printf("✅ 找到玩家 %s (ID: %s) 在房间 %s 的观战列表中 (索引: %d)", playerName, player.ID, roomID, i)
+				return room
+			}
+		}
 		// 也检查等待列表
 		for i, p := range room.WaitingPlayers {
 			if p.ID == player.ID {
@@ -1995,16 +2176,48 @@ func removePlayer(player *Player) {
 	room := findPlayerRoom(player)
 	if room != nil {
 		room.Mutex.Lock()
+		
+		// 从游戏玩家列表中移除
+		removed := false
 		for i, p := range room.Players {
 			if p.ID == player.ID {
+				// 保存筹码
+				savePlayerChips(room.ID, player.Name, player.Chips)
 				room.Players = append(room.Players[:i], room.Players[i+1:]...)
+				removed = true
 				break
+			}
+		}
+		
+		// 从观战列表中移除
+		if !removed {
+			for i, p := range room.Spectators {
+				if p.ID == player.ID {
+					// 保存筹码
+					savePlayerChips(room.ID, player.Name, player.Chips)
+					room.Spectators = append(room.Spectators[:i], room.Spectators[i+1:]...)
+					removed = true
+					break
+				}
+			}
+		}
+		
+		// 从等待列表中移除
+		if !removed {
+			for i, p := range room.WaitingPlayers {
+				if p.ID == player.ID {
+					savePlayerChips(room.ID, player.Name, player.Chips)
+					room.WaitingPlayers = append(room.WaitingPlayers[:i], room.WaitingPlayers[i+1:]...)
+					break
+				}
 			}
 		}
 
 		// 准备广播消息（需要在锁外发送）
 		players := make([]*Player, len(room.Players))
 		copy(players, room.Players)
+		spectators := make([]*Player, len(room.Spectators))
+		copy(spectators, room.Spectators)
 		room.Mutex.Unlock()
 
 		// 序列化数据并广播（此时锁已释放）
@@ -2021,6 +2234,11 @@ func removePlayer(player *Player) {
 				sendMessage(p, msg)
 			}
 		}
+		for _, p := range spectators {
+			if p.Conn != nil {
+				sendMessage(p, msg)
+			}
+		}
 	}
 }
 
@@ -2028,7 +2246,14 @@ func broadcastToRoom(room *GameRoom, msg Message) {
 	room.Mutex.RLock()
 	defer room.Mutex.RUnlock()
 
+	// 广播给游戏中的玩家
 	for _, player := range room.Players {
+		if player.Conn != nil {
+			sendMessage(player, msg)
+		}
+	}
+	// 广播给观战者
+	for _, player := range room.Spectators {
 		if player.Conn != nil {
 			sendMessage(player, msg)
 		}
@@ -2071,13 +2296,52 @@ func buyHand(player *Player, msg *Message) {
 	}
 
 	if playerIndex == -1 {
+		// 检查是否在观战列表中
+		spectatorIndex := -1
+		for i, p := range room.Spectators {
+			if p.ID == player.ID {
+				spectatorIndex = i
+				break
+			}
+		}
+		
+		if spectatorIndex != -1 {
+			// 给观战玩家增加筹码
+			room.Spectators[spectatorIndex].Chips += 500
+			newChips := room.Spectators[spectatorIndex].Chips
+			// 保存筹码
+			savePlayerChips(room.ID, player.Name, newChips)
+			// 增加买一手次数
+			if room.BuyHandCount == nil {
+				room.BuyHandCount = make(map[string]int)
+			}
+			room.BuyHandCount[player.Name]++
+			log.Printf("观战玩家 %s 买一手，筹码: %d，累计买一手次数: %d", player.Name, newChips, room.BuyHandCount[player.Name])
+			room.Mutex.Unlock()
+			// 立即发送成功消息
+			sendMessage(player, Message{
+				Type: "buyHandSuccess",
+				Data: map[string]interface{}{
+					"chips": newChips,
+				},
+			})
+			return
+		}
+		
 		// 检查是否在等待列表中
 		for i, p := range room.WaitingPlayers {
 			if p.ID == player.ID {
 				// 给等待玩家增加筹码
 				room.WaitingPlayers[i].Chips += BUY_IN_AMOUNT
 				newChips := room.WaitingPlayers[i].Chips
-				log.Printf("等待玩家 %s 买一手，筹码: %d", player.Name, newChips)
+				// 保存筹码
+				savePlayerChips(room.ID, player.Name, newChips)
+				// 增加买一手次数
+				if room.BuyHandCount == nil {
+					room.BuyHandCount = make(map[string]int)
+				}
+				room.BuyHandCount[player.Name]++
+				log.Printf("等待玩家 %s 买一手，筹码: %d，累计买一手次数: %d", player.Name, newChips, room.BuyHandCount[player.Name])
 				room.Mutex.Unlock()
 				// 立即发送成功消息
 				sendMessage(player, Message{
@@ -2100,7 +2364,14 @@ func buyHand(player *Player, msg *Message) {
 	// 增加筹码
 	room.Players[playerIndex].Chips += BUY_IN_AMOUNT
 	newChips := room.Players[playerIndex].Chips
-	log.Printf("玩家 %s 买一手，筹码: %d", player.Name, newChips)
+	// 保存筹码
+	savePlayerChips(room.ID, player.Name, newChips)
+	// 增加买一手次数
+	if room.BuyHandCount == nil {
+		room.BuyHandCount = make(map[string]int)
+	}
+	room.BuyHandCount[player.Name]++
+	log.Printf("玩家 %s 买一手，筹码: %d，累计买一手次数: %d", player.Name, newChips, room.BuyHandCount[player.Name])
 
 	// 立即发送成功消息给玩家（在广播之前）
 	room.Mutex.Unlock()
@@ -2115,6 +2386,8 @@ func buyHand(player *Player, msg *Message) {
 	room.Mutex.RLock()
 	allPlayers := make([]*Player, len(room.Players))
 	copy(allPlayers, room.Players)
+	spectators := make([]*Player, len(room.Spectators))
+	copy(spectators, room.Spectators)
 	waitingPlayers := make([]*Player, len(room.WaitingPlayers))
 	copy(waitingPlayers, room.WaitingPlayers)
 	roomData := room.ToJSON()
@@ -2132,12 +2405,394 @@ func buyHand(player *Player, msg *Message) {
 			sendMessage(p, updateMsg)
 		}
 	}
-	// 也广播给等待列表中的玩家（观战者）
+	// 广播给观战者
+	for _, p := range spectators {
+		if p.Conn != nil {
+			sendMessage(p, updateMsg)
+		}
+	}
+	// 也广播给等待列表中的玩家
 	for _, p := range waitingPlayers {
 		if p.Conn != nil {
 			sendMessage(p, updateMsg)
 		}
 	}
+}
+
+// 获取买一手次数统计
+func getBuyHandStats(player *Player, msg *Message) {
+	room := findPlayerRoom(player)
+	if room == nil {
+		sendMessage(player, Message{
+			Type: "error",
+			Data: map[string]string{"message": "房间不存在"},
+		})
+		return
+	}
+
+	room.Mutex.RLock()
+	buyHandCount := make(map[string]int)
+	if room.BuyHandCount != nil {
+		// 复制统计数据
+		for name, count := range room.BuyHandCount {
+			buyHandCount[name] = count
+		}
+	}
+	room.Mutex.RUnlock()
+
+	sendMessage(player, Message{
+		Type: "buyHandStats",
+		Data: map[string]interface{}{
+			"stats": buyHandCount,
+		},
+	})
+}
+
+// 心跳检测
+func startHeartbeatCheck(player *Player) {
+	ticker := time.NewTicker(5 * time.Second) // 每5秒检查一次
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if time.Since(player.LastHeartbeat) > 30*time.Second {
+				log.Printf("玩家 %s 心跳超时（30秒无响应），标记为超时", player.Name)
+				// 只标记，等游戏结束后再移入观战
+				markPlayerHeartbeatTimeout(player)
+				return
+			}
+		}
+	}
+}
+
+// 标记玩家心跳超时（游戏进行中自动执行操作，游戏结束后移入观战）
+func markPlayerHeartbeatTimeout(player *Player) {
+	room := findPlayerRoom(player)
+	if room == nil {
+		return
+	}
+
+	room.Mutex.Lock()
+	defer room.Mutex.Unlock()
+
+	// 检查玩家是否在游戏中
+	playerIndex := -1
+	for i, p := range room.Players {
+		if p.ID == player.ID {
+			playerIndex = i
+			break
+		}
+	}
+
+	if playerIndex == -1 {
+		// 玩家不在游戏中，可能是观战者，只标记即可
+		for _, p := range room.Spectators {
+			if p.ID == player.ID {
+				p.HeartbeatTimeout = true
+				log.Printf("观战玩家 %s 已标记为心跳超时", player.Name)
+				return
+			}
+		}
+		return
+	}
+
+	// 玩家在游戏中，标记为超时
+	room.Players[playerIndex].HeartbeatTimeout = true
+	log.Printf("玩家 %s 已标记为心跳超时", player.Name)
+
+	// 如果游戏正在进行中，且是当前回合，自动执行操作
+	if room.GamePhase != "waiting" && room.GamePhase != "showdown" {
+		if room.CurrentTurn == playerIndex {
+			// 是当前回合，立即自动执行操作
+			log.Printf("玩家 %s 在游戏中离线且是当前回合，自动执行操作", player.Name)
+			handleTimeoutAction(room, playerIndex)
+		} else {
+			// 不是当前回合，等轮到他的时候会自动处理
+			log.Printf("玩家 %s 在游戏中离线但不是当前回合，等轮到他的时候会自动处理", player.Name)
+		}
+	} else {
+		// 游戏未开始或已结束，等游戏结束后再移入观战
+		log.Printf("玩家 %s 心跳超时，游戏状态: %s，等游戏结束后移入观战", player.Name, room.GamePhase)
+	}
+}
+
+// 处理超时玩家的自动操作（弃牌或过牌）
+func handleTimeoutAction(room *GameRoom, playerIndex int) {
+	if playerIndex < 0 || playerIndex >= len(room.Players) {
+		return
+	}
+
+	player := room.Players[playerIndex]
+	if player == nil || player.Folded || player.AllIn {
+		return
+	}
+
+	// 取消当前回合的超时定时器
+	if room.TurnTimer != nil {
+		room.TurnTimer.Stop()
+		room.TurnTimer = nil
+	}
+
+	log.Printf("玩家 %s 超时，自动行动，房间 %s，当前下注: %d，玩家下注: %d", player.Name, room.ID, room.CurrentBet, player.Bet)
+
+	// 检查是否可以过牌
+	if player.Bet == room.CurrentBet {
+		// 可以过牌，自动过牌
+		log.Printf("玩家 %s 自动过牌（下注已匹配）", player.Name)
+		// 过牌不需要改变状态，直接进入下一回合
+	} else {
+		// 无法过牌，自动弃牌
+		log.Printf("玩家 %s 无法过牌（需要跟注 %d），自动弃牌", player.Name, room.CurrentBet-player.Bet)
+		player.Folded = true
+	}
+
+	// 移动到下一个玩家
+	log.Printf("超时处理：调用nextTurn，房间 %s", room.ID)
+	gameEnded := nextTurn(room)
+
+	// 如果游戏结束，nextTurn已经释放了锁，直接返回
+	if gameEnded {
+		return
+	}
+
+	// 准备广播消息
+	players := make([]*Player, len(room.Players))
+	copy(players, room.Players)
+	spectators := make([]*Player, len(room.Spectators))
+	copy(spectators, room.Spectators)
+	waitingPlayers := make([]*Player, len(room.WaitingPlayers))
+	copy(waitingPlayers, room.WaitingPlayers)
+	roomData := room.ToJSON()
+	room.Mutex.Unlock()
+
+	updateMsg := Message{
+		Type: "roomUpdated",
+		Data: map[string]interface{}{
+			"room": roomData,
+		},
+	}
+
+	// 广播给所有玩家和观战者
+	for _, p := range players {
+		if p.Conn != nil {
+			sendMessage(p, updateMsg)
+		}
+	}
+	for _, p := range spectators {
+		if p.Conn != nil {
+			sendMessage(p, updateMsg)
+		}
+	}
+	for _, p := range waitingPlayers {
+		if p.Conn != nil {
+			sendMessage(p, updateMsg)
+		}
+	}
+}
+
+// 将玩家移入观战状态
+func movePlayerToSpectating(player *Player) {
+	room := findPlayerRoom(player)
+	if room == nil {
+		return
+	}
+
+	room.Mutex.Lock()
+	defer room.Mutex.Unlock()
+
+	// 从玩家列表中移除
+	for i, p := range room.Players {
+		if p.ID == player.ID {
+			// 保存筹码
+			savePlayerChips(room.ID, player.Name, player.Chips)
+			// 移除玩家
+			room.Players = append(room.Players[:i], room.Players[i+1:]...)
+			break
+		}
+	}
+
+	// 添加到观战列表（如果不在）
+	inSpectators := false
+	for _, p := range room.Spectators {
+		if p.ID == player.ID {
+			inSpectators = true
+			break
+		}
+	}
+	if !inSpectators {
+		player.Status = PlayerStatusSpectating
+		room.Spectators = append(room.Spectators, player)
+	}
+
+	// 广播更新
+	players := make([]*Player, len(room.Players))
+	copy(players, room.Players)
+	spectators := make([]*Player, len(room.Spectators))
+	copy(spectators, room.Spectators)
+	room.Mutex.Unlock()
+
+	roomData := room.ToJSON()
+	updateMsg := Message{
+		Type: "playerMovedToSpectating",
+		Data: map[string]interface{}{
+			"playerId": player.ID,
+			"room":     roomData,
+		},
+	}
+
+	for _, p := range players {
+		if p.Conn != nil {
+			sendMessage(p, updateMsg)
+		}
+	}
+	for _, p := range spectators {
+		if p.Conn != nil {
+			sendMessage(p, updateMsg)
+		}
+	}
+}
+
+// 保存玩家筹码
+func savePlayerChips(roomID, playerName string, chips int) {
+	chipsMutex.Lock()
+	defer chipsMutex.Unlock()
+
+	if chipsStorage[roomID] == nil {
+		chipsStorage[roomID] = make(map[string]int)
+	}
+	chipsStorage[roomID][playerName] = chips
+	log.Printf("保存玩家筹码: 房间=%s, 玩家=%s, 筹码=%d", roomID, playerName, chips)
+}
+
+// 加载玩家筹码
+func loadPlayerChips(roomID, playerName string) int {
+	chipsMutex.RLock()
+	defer chipsMutex.RUnlock()
+
+	if chipsStorage[roomID] != nil {
+		if chips, exists := chipsStorage[roomID][playerName]; exists {
+			log.Printf("加载玩家筹码: 房间=%s, 玩家=%s, 筹码=%d", roomID, playerName, chips)
+			return chips
+		}
+	}
+	// 默认筹码
+	return 500
+}
+
+// 检查房间中是否有同名玩家
+func hasPlayerWithName(room *GameRoom, name string, excludeID string) bool {
+	// 检查游戏中的玩家
+	for _, p := range room.Players {
+		if p.ID != excludeID && p.Name == name {
+			return true
+		}
+	}
+	// 检查观战玩家
+	for _, p := range room.Spectators {
+		if p.ID != excludeID && p.Name == name {
+			return true
+		}
+	}
+	// 检查等待玩家
+	for _, p := range room.WaitingPlayers {
+		if p.ID != excludeID && p.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// 上桌功能
+func joinTable(player *Player, msg *Message) {
+	log.Printf("上桌请求: 玩家=%s", player.ID)
+
+	room := findPlayerRoom(player)
+	if room == nil {
+		sendMessage(player, Message{
+			Type: "error",
+			Data: map[string]string{"message": "未找到房间"},
+		})
+		return
+	}
+
+	room.Mutex.Lock()
+
+	// 检查是否在观战列表中
+	inSpectators := false
+	spectatorIndex := -1
+	for i, p := range room.Spectators {
+		if p.ID == player.ID {
+			inSpectators = true
+			spectatorIndex = i
+			break
+		}
+	}
+
+	if !inSpectators {
+		room.Mutex.Unlock()
+		sendMessage(player, Message{
+			Type: "error",
+			Data: map[string]string{"message": "您不在观战列表中"},
+		})
+		return
+	}
+
+	// 检查游戏是否正在进行
+	if room.GamePhase != "waiting" {
+		room.Mutex.Unlock()
+		sendMessage(player, Message{
+			Type: "error",
+			Data: map[string]string{"message": "游戏正在进行中，无法加入"},
+		})
+		return
+	}
+
+	// 检查房间是否已满
+	if len(room.Players) >= MAX_PLAYERS {
+		room.Mutex.Unlock()
+		sendMessage(player, Message{
+			Type: "error",
+			Data: map[string]string{"message": "房间已满"},
+		})
+		return
+	}
+
+	// 从观战列表移除
+	room.Spectators = append(room.Spectators[:spectatorIndex], room.Spectators[spectatorIndex+1:]...)
+
+	// 添加到游戏玩家列表
+	player.Status = PlayerStatusPlaying
+	room.Players = append(room.Players, player)
+
+	players := make([]*Player, len(room.Players))
+	copy(players, room.Players)
+	spectators := make([]*Player, len(room.Spectators))
+	copy(spectators, room.Spectators)
+	room.Mutex.Unlock()
+
+	// 广播更新
+	roomData := room.ToJSON()
+	updateMsg := Message{
+		Type: "playerJoinedTable",
+		Data: map[string]interface{}{
+			"player": player,
+			"room":   roomData,
+		},
+	}
+
+	for _, p := range players {
+		if p.Conn != nil {
+			sendMessage(p, updateMsg)
+		}
+	}
+	for _, p := range spectators {
+		if p.Conn != nil {
+			sendMessage(p, updateMsg)
+		}
+	}
+
+	log.Printf("玩家 %s 成功上桌，房间 %s", player.Name, room.ID)
 }
 
 func generateID() string {

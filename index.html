@@ -45,6 +45,7 @@
                 <!-- 顶部信息栏 -->
                 <div class="game-header">
                     <div class="room-id-info">
+                        <button id="buyHandStatsBtn" class="btn btn-info btn-small" style="margin-right: 10px;">买一手统计</button>
                         <span>房间ID: <strong id="gameRoomId">-</strong></span>
                         <button id="shareRoomBtn" class="btn btn-secondary btn-small">分享房间</button>
                     </div>
@@ -105,6 +106,9 @@
                             <button id="raiseBtn" class="btn btn-success">加注</button>
                         </div>
                         <div class="raise-quick-buttons">
+                            <button id="raise20Btn" class="btn btn-info btn-small">+20</button>
+                            <button id="raise50Btn" class="btn btn-info btn-small">+50</button>
+                            <button id="raise100Btn" class="btn btn-info btn-small">+100</button>
                             <button id="halfPotBtn" class="btn btn-info btn-small">半池</button>
                             <button id="fullPotBtn" class="btn btn-info btn-small">满池</button>
                             <button id="allInBtn" class="btn btn-warning btn-small">全押</button>
@@ -112,8 +116,22 @@
                     </div>
                 </div>
 
+                <!-- 观战面板 -->
+                <div id="spectatingPanel" class="spectating-panel hidden">
+                    <div class="spectating-header">
+                        <h3>👀 观战模式</h3>
+                        <p>您可以观看游戏，但无法参与操作</p>
+                    </div>
+                    <div class="player-info">
+                        <span>你的筹码: <strong id="playerChipsSpectating">500</strong></span>
+                        <button id="buyHandBtnSpectating" class="btn btn-secondary btn-small">买一手 (+500)</button>
+                    </div>
+                    <button id="joinTableBtn" class="btn btn-success btn-large">上桌</button>
+                    <p class="spectating-note">提示：游戏进行中时无法上桌，请等待本局结束</p>
+                </div>
+                
                 <!-- 等待提示 -->
-                <div id="waitingPanel" class="waiting-panel">
+                <div id="waitingPanel" class="waiting-panel hidden">
                     <div class="player-info">
                         <span>你的筹码: <strong id="playerChipsWaiting">500</strong></span>
                         <span>已下注: <strong id="playerBetWaiting">0</strong></span>
@@ -149,6 +167,19 @@
                 <h2>游戏结束</h2>
                 <div id="winnerInfo"></div>
                 <button id="newHandBtn" class="btn btn-primary">下一局</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 买一手统计模态框 -->
+    <div id="buyHandStatsModal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>买一手次数统计</h3>
+                <button id="closeBuyHandStatsBtn" class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="buyHandStatsList"></div>
             </div>
         </div>
     </div>

@@ -6,6 +6,8 @@ let gameState = null;
 let turnTimer = null; // 回合倒计时定时器
 let isSettlement = false; // 是否在结算状态
 let settlementData = null; // 结算数据
+let heartbeatInterval = null; // 心跳定时器
+let isSpectating = false; // 是否在观战状态
 
 // DOM元素
 const loginScreen = document.getElementById('loginScreen');
@@ -63,6 +65,25 @@ function setupEventListeners() {
     // 游戏界面中的开始按钮
     document.getElementById('startGameBtnInGame').addEventListener('click', startGame);
     
+    // 上桌按钮
+    const joinTableBtn = document.getElementById('joinTableBtn');
+    if (joinTableBtn) {
+        joinTableBtn.addEventListener('click', joinTable);
+    }
+    
+    // 观战面板的买一手按钮
+    const buyHandBtnSpectating = document.getElementById('buyHandBtnSpectating');
+    if (buyHandBtnSpectating) {
+        buyHandBtnSpectating.addEventListener('click', () => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'buyHand',
+                    data: {}
+                }));
+            }
+        });
+    }
+    
     // 分享房间按钮
     const shareRoomBtn = document.getElementById('shareRoomBtn');
     if (shareRoomBtn) {
@@ -99,12 +120,68 @@ function setupEventListeners() {
             }
         });
     }
+    
+    // 买一手统计按钮
+    const buyHandStatsBtn = document.getElementById('buyHandStatsBtn');
+    if (buyHandStatsBtn) {
+        buyHandStatsBtn.addEventListener('click', () => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'getBuyHandStats',
+                    data: {}
+                }));
+            }
+        });
+    }
+    
+    // 关闭买一手统计模态框
+    const closeBuyHandStatsBtn = document.getElementById('closeBuyHandStatsBtn');
+    if (closeBuyHandStatsBtn) {
+        closeBuyHandStatsBtn.addEventListener('click', () => {
+            const modal = document.getElementById('buyHandStatsModal');
+            if (modal) {
+                modal.classList.add('hidden');
+            }
+        });
+    }
+    
+    // 点击模态框外部关闭
+    const buyHandStatsModal = document.getElementById('buyHandStatsModal');
+    if (buyHandStatsModal) {
+        buyHandStatsModal.addEventListener('click', (e) => {
+            if (e.target === buyHandStatsModal) {
+                buyHandStatsModal.classList.add('hidden');
+            }
+        });
+    }
     document.getElementById('raiseBtn').addEventListener('click', () => {
         const amount = parseInt(document.getElementById('raiseAmount').value);
         if (amount > 0) {
             sendAction('raise', amount);
         }
     });
+    
+    // 加注快捷按钮（固定金额）
+    const raise20Btn = document.getElementById('raise20Btn');
+    if (raise20Btn) {
+        raise20Btn.addEventListener('click', () => {
+            sendAction('raise', 20);
+        });
+    }
+    
+    const raise50Btn = document.getElementById('raise50Btn');
+    if (raise50Btn) {
+        raise50Btn.addEventListener('click', () => {
+            sendAction('raise', 50);
+        });
+    }
+    
+    const raise100Btn = document.getElementById('raise100Btn');
+    if (raise100Btn) {
+        raise100Btn.addEventListener('click', () => {
+            sendAction('raise', 100);
+        });
+    }
     
     // 加注快捷按钮（直接加注）
     const halfPotBtn = document.getElementById('halfPotBtn');
@@ -207,6 +284,8 @@ function connectWebSocket() {
                 errorDiv.textContent = '';
                 errorDiv.style.display = 'none';
             }
+            // 启动心跳
+            startHeartbeat();
         };
 
         ws.onmessage = (event) => {
@@ -235,6 +314,7 @@ function connectWebSocket() {
 
         ws.onclose = (event) => {
             console.log('WebSocket连接已关闭:', event.code, event.reason);
+            stopHeartbeat();
             if (event.code !== 1000) {
                 showError('连接已断开，请刷新页面重试');
             }
@@ -429,19 +509,29 @@ function handleMessage(message) {
             console.log('设置房间ID:', currentRoom);
             // 更新房间ID显示
             updateRoomIdDisplay(currentRoom);
-            // 直接进入游戏界面，不显示大厅
-            if (message.data.room) {
-                updateGameState(message.data.room);
-                // 找到当前玩家
-                if (message.data.room.players && message.data.room.players.length > 0) {
-                    const playerName = document.getElementById('playerName').value.trim();
-                    currentPlayer = message.data.room.players.find(p => p.name === playerName) || 
-                                   message.data.room.players[message.data.room.players.length - 1];
+            // 检查是否在观战状态
+            if (message.data.isSpectating) {
+                isSpectating = true;
+                if (message.data.room) {
+                    updateGameState(message.data.room);
+                    showSpectatingPanel(message.data.room);
                 }
                 showScreen('gameScreen');
             } else {
-                // 如果没有房间数据，等待roomJoined消息
-                showScreen('gameScreen');
+                // 直接进入游戏界面，不显示大厅
+                if (message.data.room) {
+                    updateGameState(message.data.room);
+                    // 找到当前玩家
+                    if (message.data.room.players && message.data.room.players.length > 0) {
+                        const playerName = document.getElementById('playerName').value.trim();
+                        currentPlayer = message.data.room.players.find(p => p.name === playerName) || 
+                                       message.data.room.players[message.data.room.players.length - 1];
+                    }
+                    showScreen('gameScreen');
+                } else {
+                    // 如果没有房间数据，等待roomJoined消息
+                    showScreen('gameScreen');
+                }
             }
             break;
 
@@ -450,9 +540,20 @@ function handleMessage(message) {
             // 更新房间ID显示
             updateRoomIdDisplay(currentRoom);
             
+            // 检查是否在观战状态
+            if (message.data.isSpectating) {
+                console.log('进入观战状态');
+                isSpectating = true;
+                if (message.data.room) {
+                    updateGameState(message.data.room);
+                    showScreen('gameScreen');
+                    showSpectatingPanel(message.data.room);
+                }
+            }
             // 检查是否在等待状态
-            if (message.data.isWaiting) {
+            else if (message.data.isWaiting) {
                 console.log('游戏正在进行中，需要等待下一局');
+                isSpectating = false;
                 // 显示游戏界面，但玩家处于等待状态
                 if (message.data.room) {
                     updateGameState(message.data.room);
@@ -460,12 +561,16 @@ function handleMessage(message) {
                     // 显示等待提示
                     const waitingPanel = document.getElementById('waitingPanel');
                     const actionPanel = document.getElementById('actionPanel');
+                    const spectatingPanel = document.getElementById('spectatingPanel');
                     if (waitingPanel) {
                         waitingPanel.innerHTML = '<p style="font-size: 1.2em; color: #ffd700;">⏳ 游戏正在进行中，请等待下一局开始</p>';
                         waitingPanel.classList.remove('hidden');
                     }
                     if (actionPanel) {
                         actionPanel.classList.add('hidden');
+                    }
+                    if (spectatingPanel) {
+                        spectatingPanel.classList.add('hidden');
                     }
                     // 清空手牌显示
                     const handCard0 = document.getElementById('handCard0');
@@ -475,6 +580,7 @@ function handleMessage(message) {
                 }
             } else {
                 // 找到当前玩家
+                isSpectating = false;
                 if (message.data.room.players && message.data.room.players.length > 0) {
                     const playerName = document.getElementById('playerName').value.trim();
                     currentPlayer = message.data.room.players.find(p => p.name === playerName) || 
@@ -483,6 +589,43 @@ function handleMessage(message) {
                 // 直接进入游戏界面
                 updateGameState(message.data.room);
                 showScreen('gameScreen');
+                hideSpectatingPanel();
+            }
+            break;
+            
+        case 'playerJoinedTable':
+            console.log('玩家上桌成功', message.data);
+            // 检查是否是自己上桌
+            const playerName = document.getElementById('playerName')?.value.trim();
+            const joinedPlayer = message.data.player;
+            
+            if (joinedPlayer && joinedPlayer.name === playerName) {
+                // 是自己上桌，隐藏观战面板
+                console.log('自己上桌成功');
+                isSpectating = false;
+                if (message.data.room) {
+                    updateGameState(message.data.room);
+                    hideSpectatingPanel();
+                }
+            } else {
+                // 是其他玩家上桌，只更新游戏状态，保持自己的观战状态
+                console.log('其他玩家上桌，保持观战状态');
+                if (message.data.room) {
+                    updateGameState(message.data.room);
+                    // 如果自己在观战，保持观战面板显示
+                    if (isSpectating) {
+                        showSpectatingPanel(message.data.room);
+                    }
+                }
+            }
+            break;
+            
+        case 'playerMovedToSpectating':
+            console.log('玩家被移入观战状态');
+            isSpectating = true;
+            if (message.data.room) {
+                updateGameState(message.data.room);
+                showSpectatingPanel(message.data.room);
             }
             break;
             
@@ -492,16 +635,36 @@ function handleMessage(message) {
                 // 检查玩家是否在等待列表中
                 const room = message.data.room;
                 const playerName = document.getElementById('playerName')?.value.trim();
+                
+                // 检查自己的状态
                 let isInWaitingList = false;
+                let isInSpectators = false;
+                let isInPlayers = false;
                 
                 if (room.waitingPlayers && Array.isArray(room.waitingPlayers)) {
                     isInWaitingList = room.waitingPlayers.some(p => p && p.name === playerName);
+                }
+                
+                if (room.spectators && Array.isArray(room.spectators)) {
+                    isInSpectators = room.spectators.some(p => p && p.name === playerName);
+                }
+                
+                if (room.players && Array.isArray(room.players)) {
+                    isInPlayers = room.players.some(p => p && p.name === playerName);
+                }
+                
+                // 更新自己的观战状态
+                if (isInSpectators) {
+                    isSpectating = true;
+                } else if (isInPlayers) {
+                    isSpectating = false;
                 }
                 
                 // 如果玩家在等待列表中，显示等待提示
                 if (isInWaitingList) {
                     const waitingPanel = document.getElementById('waitingPanel');
                     const actionPanel = document.getElementById('actionPanel');
+                    const spectatingPanel = document.getElementById('spectatingPanel');
                     if (waitingPanel) {
                         waitingPanel.innerHTML = '<p style="font-size: 1.2em; color: #ffd700;">⏳ 游戏正在进行中，请等待下一局开始</p>';
                         waitingPanel.classList.remove('hidden');
@@ -509,22 +672,33 @@ function handleMessage(message) {
                     if (actionPanel) {
                         actionPanel.classList.add('hidden');
                     }
+                    if (spectatingPanel) {
+                        spectatingPanel.classList.add('hidden');
+                    }
                     // 清空手牌显示
                     const handCard0 = document.getElementById('handCard0');
                     const handCard1 = document.getElementById('handCard1');
                     if (handCard0) handCard0.innerHTML = '';
                     if (handCard1) handCard1.innerHTML = '';
+                } else if (isInSpectators) {
+                    // 在观战列表中，显示观战面板
+                    showSpectatingPanel(room);
+                } else if (isInPlayers) {
+                    // 在游戏列表中，隐藏观战面板
+                    hideSpectatingPanel();
                 }
                 
-                updateGameState(message.data.room);
-                // 更新当前玩家信息
+                // 先更新当前玩家信息，确保updatePlayerInfo使用正确的玩家信息
                 if (message.data.room.players && message.data.room.players.length > 0) {
                     const player = message.data.room.players.find(p => p.name === playerName);
                     if (player) {
                         currentPlayer = player;
-                        console.log('等待玩家已加入游戏:', currentPlayer);
+                        console.log('更新当前玩家:', currentPlayer);
                     }
                 }
+                
+                // 然后更新游戏状态（会调用updatePlayerInfo，使用正确的player参数）
+                updateGameState(message.data.room);
             }
             break;
 
@@ -622,6 +796,17 @@ function handleMessage(message) {
 
         case 'actionTaken':
             gameState = message.data;
+            // 先更新当前玩家信息，确保updatePlayerInfo使用正确的玩家信息
+            if (gameState && gameState.players && gameState.players.length > 0) {
+                const playerName = document.getElementById('playerName')?.value.trim();
+                if (playerName) {
+                    const player = gameState.players.find(p => p.name === playerName);
+                    if (player) {
+                        currentPlayer = player;
+                        console.log('actionTaken: 更新当前玩家:', currentPlayer);
+                    }
+                }
+            }
             updateGameState(gameState);
             break;
 
@@ -642,6 +827,12 @@ function handleMessage(message) {
                 }
             }
             break;
+            
+        case 'buyHandStats':
+            console.log('收到买一手统计:', message.data);
+            showBuyHandStats(message.data.stats);
+            break;
+            
         case 'error':
             const errorMsg = message.data.message || message.data || '发生错误';
             console.error('收到错误消息:', errorMsg);
@@ -734,6 +925,18 @@ function updateGameState(room) {
     // 更新玩家区域
     // 如果是新游戏开始且不是结算状态，会清空玩家手牌显示
     updatePlayersArea(room.players || [], room.currentTurn, room.dealerIndex);
+
+    // 如果玩家在观战状态，更新观战面板的筹码显示
+    if (isSpectating && room.spectators) {
+        const playerName = document.getElementById('playerName')?.value.trim();
+        const spectator = room.spectators.find(p => p && p.name === playerName);
+        if (spectator) {
+            const chipsEl = document.getElementById('playerChipsSpectating');
+            if (chipsEl) {
+                chipsEl.textContent = spectator.chips || 500;
+            }
+        }
+    }
 
     // 更新当前玩家信息
     if (room.players) {
@@ -1100,10 +1303,14 @@ function updatePlayerInfo(player, room) {
     const raiseAmount = document.getElementById('raiseAmount');
     const raiseGroup = raiseBtn ? raiseBtn.parentElement : null;
     
-    if (currentPlayer && room.currentTurn !== undefined && room.players && 
-        room.players[room.currentTurn] && 
-        room.players[room.currentTurn].id === currentPlayer.id && 
-        !player.folded && !player.allIn && room.gamePhase !== 'waiting') {
+    // 判断是否是当前回合：使用传入的player参数，而不是currentPlayer
+    // 因为currentPlayer可能没有及时更新
+    const isMyTurn = room.currentTurn !== undefined && 
+                     room.players && 
+                     room.players[room.currentTurn] && 
+                     room.players[room.currentTurn].id === player.id;
+    
+    if (isMyTurn && !player.folded && !player.allIn && room.gamePhase !== 'waiting') {
         actionPanel.classList.remove('hidden');
         waitingPanel.classList.add('hidden');
         
@@ -1523,4 +1730,145 @@ function showError(message) {
 // 保存当前玩家信息
 function setCurrentPlayer(player) {
     currentPlayer = player;
+}
+
+// 启动心跳
+function startHeartbeat() {
+    // 清除旧的定时器
+    if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+    }
+    
+    // 每20秒发送一次心跳
+    heartbeatInterval = setInterval(() => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+                type: 'heartbeat',
+                data: {}
+            }));
+        }
+    }, 20000); // 20秒发送一次，30秒超时
+}
+
+// 停止心跳
+function stopHeartbeat() {
+    if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+        heartbeatInterval = null;
+    }
+}
+
+// 上桌功能
+function joinTable() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        showError('连接未建立，请刷新页面');
+        return;
+    }
+    
+    ws.send(JSON.stringify({
+        type: 'joinTable',
+        data: {}
+    }));
+}
+
+// 显示观战面板
+function showSpectatingPanel(room) {
+    const spectatingPanel = document.getElementById('spectatingPanel');
+    const actionPanel = document.getElementById('actionPanel');
+    const waitingPanel = document.getElementById('waitingPanel');
+    
+    if (spectatingPanel) {
+        spectatingPanel.classList.remove('hidden');
+        
+        // 更新筹码显示
+        const playerName = document.getElementById('playerName')?.value.trim();
+        if (room && room.spectators) {
+            const spectator = room.spectators.find(p => p && p.name === playerName);
+            if (spectator) {
+                const chipsEl = document.getElementById('playerChipsSpectating');
+                if (chipsEl) {
+                    chipsEl.textContent = spectator.chips || 500;
+                }
+            }
+        }
+    }
+    
+    if (actionPanel) {
+        actionPanel.classList.add('hidden');
+    }
+    
+    if (waitingPanel) {
+        waitingPanel.classList.add('hidden');
+    }
+    
+    // 清空手牌显示
+    const handCard0 = document.getElementById('handCard0');
+    const handCard1 = document.getElementById('handCard1');
+    if (handCard0) handCard0.innerHTML = '';
+    if (handCard1) handCard1.innerHTML = '';
+}
+
+// 隐藏观战面板
+function hideSpectatingPanel() {
+    const spectatingPanel = document.getElementById('spectatingPanel');
+    if (spectatingPanel) {
+        spectatingPanel.classList.add('hidden');
+    }
+}
+
+// 显示买一手统计
+function showBuyHandStats(stats) {
+    const modal = document.getElementById('buyHandStatsModal');
+    const statsList = document.getElementById('buyHandStatsList');
+    
+    if (!modal || !statsList) {
+        return;
+    }
+    
+    // 清空列表
+    statsList.innerHTML = '';
+    
+    if (!stats || Object.keys(stats).length === 0) {
+        statsList.innerHTML = '<p style="text-align: center; color: #999; padding: 20px;">暂无统计数据</p>';
+    } else {
+        // 转换为数组并排序（按次数降序）
+        const statsArray = Object.entries(stats)
+            .map(([name, count]) => ({ name, count }))
+            .sort((a, b) => b.count - a.count);
+        
+        // 创建列表
+        const list = document.createElement('ul');
+        list.style.listStyle = 'none';
+        list.style.padding = '0';
+        list.style.margin = '0';
+        
+        statsArray.forEach(({ name, count }) => {
+            const item = document.createElement('li');
+            item.style.padding = '12px 15px';
+            item.style.borderBottom = '1px solid rgba(255, 255, 255, 0.1)';
+            item.style.display = 'flex';
+            item.style.justifyContent = 'space-between';
+            item.style.alignItems = 'center';
+            
+            const nameSpan = document.createElement('span');
+            nameSpan.textContent = name;
+            nameSpan.style.fontWeight = 'bold';
+            nameSpan.style.color = '#fff';
+            
+            const countSpan = document.createElement('span');
+            countSpan.textContent = `${count} 次`;
+            countSpan.style.color = '#4CAF50';
+            countSpan.style.fontWeight = 'bold';
+            countSpan.style.fontSize = '1.1em';
+            
+            item.appendChild(nameSpan);
+            item.appendChild(countSpan);
+            list.appendChild(item);
+        });
+        
+        statsList.appendChild(list);
+    }
+    
+    // 显示模态框
+    modal.classList.remove('hidden');
 }

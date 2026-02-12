@@ -63,6 +63,11 @@ docker-compose up -d
 
 **注意**：项目内已包含 `alpine-latest.tar` 镜像文件，离线构建时会自动加载。
 
+**云端部署后无法访问？**
+- 运行诊断：`./check-network.sh`
+- 配置防火墙：`sudo ./fix-firewall.sh`
+- 查看详细指南：[云端部署指南](./README-CLOUD-DEPLOY.md)
+
 **常用 Docker 命令：**
 
 ```bash
