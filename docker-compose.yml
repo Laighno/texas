@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  texas-poker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: texas-poker-server
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    networks:
+      - texas-poker-network
+
+networks:
+  texas-poker-network:
+    driver: bridge

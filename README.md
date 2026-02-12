@@ -27,17 +27,58 @@
 
 ## 安装和运行
 
-### 前置要求
+### 方式一：使用 Docker（推荐，一行命令启动）
+
+#### 前置要求
+
+- Docker 和 Docker Compose
+- 现代浏览器（支持WebSocket）
+
+#### 启动步骤
+
+**一行命令启动：**
+
+```bash
+./docker-start.sh
+```
+
+或者使用 docker-compose：
+
+```bash
+docker-compose up -d
+```
+
+服务器将在 `http://localhost:8080` 启动
+
+**常用 Docker 命令：**
+
+```bash
+# 查看日志
+docker-compose logs -f
+
+# 停止服务
+docker-compose down
+
+# 重启服务
+docker-compose restart
+
+# 重新构建并启动
+docker-compose up -d --build
+```
+
+### 方式二：本地运行
+
+#### 前置要求
 
 - Go 1.21 或更高版本
 - 现代浏览器（支持WebSocket）
 
-### 启动步骤
+#### 启动步骤
 
 1. **安装依赖**
 
 ```bash
-cd /home/laighno/go/src/awesomeProject
+cd /home/laighno/go/src/texas
 go mod download
 ```
 

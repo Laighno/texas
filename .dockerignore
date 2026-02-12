@@ -1,0 +1,39 @@
+# 忽略测试文件
+*_test.go
+test_*.go
+test_*.sh
+*.test
+
+# 忽略构建产物
+poker-server
+*.exe
+*.dll
+*.so
+*.dylib
+
+# 忽略文档
+*.md
+!README.md
+
+# 忽略 Git
+.git
+.gitignore
+
+# 忽略 IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# 忽略日志
+*.log
+
+# 忽略临时文件
+*.tmp
+*.temp
+
+# 忽略 Docker 相关（避免递归）
+Dockerfile
+docker-compose.yml
+.dockerignore
