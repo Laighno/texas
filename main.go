@@ -15,9 +15,15 @@ import (
 )
 
 const (
-	MIN_PLAYERS = 4
-	MAX_PLAYERS = 12
-	PORT        = ":8080"
+	MIN_PLAYERS     = 4
+	MAX_PLAYERS     = 12
+	PORT            = ":8080"
+	SMALL_BLIND     = 5   // 小盲注
+	BIG_BLIND       = 10  // 大盲注
+	INITIAL_CHIPS   = 500 // 初始筹码
+	BUY_IN_AMOUNT   = 500 // 买入金额
+	TURN_TIMEOUT    = 60  // 回合超时时间（秒）
+	CARDS_IN_DECK   = 52  // 一副牌的牌数
 )
 
 var upgrader = websocket.Upgrader{
@@ -158,7 +164,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	player := &Player{
 		ID:    playerID,
 		Conn:  conn,
-		Chips: 500, // 初始筹码（一手）
+		Chips: INITIAL_CHIPS,
 	}
 
 	log.Printf("新玩家连接成功: ID=%s, 地址=%s", playerID, r.RemoteAddr)
@@ -526,22 +532,35 @@ func startNewHand(room *GameRoom) {
 		p.IsBig = (i == bigBlindIndex)
 	}
 
-	// 发牌给玩家
-	for _, p := range room.Players {
-		p.Hand = []Card{drawCard(&room.Deck), drawCard(&room.Deck)}
+	// 按座位顺序发牌（从庄家下一位开始，发两轮）
+	// 第一轮：每人发一张
+	for round := 0; round < 2; round++ {
+		for i := 0; i < len(room.Players); i++ {
+			playerIndex := (room.DealerIndex + 1 + i) % len(room.Players)
+			card, err := drawCard(&room.Deck)
+			if err != nil {
+				log.Printf("发牌失败: %v，房间 %s", err, room.ID)
+				// 重新创建并洗牌
+				room.Deck = createDeck()
+				shuffleDeck(room.Deck)
+				card, err = drawCard(&room.Deck)
+				if err != nil {
+					log.Printf("严重错误：重新洗牌后仍然无法发牌: %v", err)
+					return
+				}
+			}
+			room.Players[playerIndex].Hand = append(room.Players[playerIndex].Hand, card)
+		}
 	}
 
 	// 下大小盲注
-	smallBlind := 5
-	bigBlind := 10 // 大盲注应该是小盲注的两倍
+	room.Players[smallBlindIndex].Bet = SMALL_BLIND
+	room.Players[smallBlindIndex].Chips -= SMALL_BLIND
+	room.Players[bigBlindIndex].Bet = BIG_BLIND
+	room.Players[bigBlindIndex].Chips -= BIG_BLIND
 
-	room.Players[smallBlindIndex].Bet = smallBlind
-	room.Players[smallBlindIndex].Chips -= smallBlind
-	room.Players[bigBlindIndex].Bet = bigBlind
-	room.Players[bigBlindIndex].Chips -= bigBlind
-
-	room.Pot = smallBlind + bigBlind
-	room.CurrentBet = bigBlind
+	room.Pot = SMALL_BLIND + BIG_BLIND
+	room.CurrentBet = BIG_BLIND
 	room.CurrentTurn = (bigBlindIndex + 1) % len(room.Players)
 	// 在翻牌前，初始化为-1，表示还没有人加注（大盲注不算加注，只是初始下注）
 	// 在nextTurn中会特殊处理翻牌前的情况，确保大盲注也行动后才能进入下一阶段
@@ -633,10 +652,10 @@ func handleAction(player *Player, msg *Message) {
 		return
 	}
 
-	action, _ := data["action"].(string)
-	amount, _ := data["amount"].(float64)
+		action, _ := data["action"].(string)
+		amount, _ := data["amount"].(float64)
 
-	playerIndex := -1
+		playerIndex := -1
 	for i, p := range room.Players {
 		if p.ID == player.ID {
 			playerIndex = i
@@ -678,12 +697,11 @@ func handleAction(player *Player, msg *Message) {
 	case "raise":
 		raiseAmount := int(amount)
 		// 验证最小加注金额（最小加注 = 大盲注）
-		minRaise := 10 // 大盲注
-		if raiseAmount < minRaise {
+		if raiseAmount < BIG_BLIND {
 			room.Mutex.Unlock()
 			sendMessage(player, Message{
 				Type: "error",
-				Data: map[string]string{"message": fmt.Sprintf("最小加注金额为 %d", minRaise)},
+				Data: map[string]string{"message": fmt.Sprintf("最小加注金额为 %d", BIG_BLIND)},
 			})
 			return
 		}
@@ -905,7 +923,7 @@ func nextTurn(room *GameRoom) bool {
 						waitingPlayer.IsSmall = false
 						waitingPlayer.IsBig = false
 						if waitingPlayer.Chips == 0 {
-							waitingPlayer.Chips = 500
+							waitingPlayer.Chips = INITIAL_CHIPS
 						}
 						log.Printf("等待玩家 %s 已加入游戏，房间 %s，当前玩家数: %d", waitingPlayer.Name, r.ID, len(r.Players))
 					}
@@ -1041,23 +1059,39 @@ func nextTurn(room *GameRoom) bool {
 			// 如果还没发完所有公共牌，先发完
 			if oldPhase == "preflop" {
 				// 发翻牌
-				room.CommunityCards = []Card{
-					drawCard(&room.Deck),
-					drawCard(&room.Deck),
-					drawCard(&room.Deck),
+				for i := 0; i < 3; i++ {
+					card, err := drawCard(&room.Deck)
+					if err != nil {
+						log.Printf("发翻牌失败（全押）: %v，房间 %s", err, room.ID)
+						room.Mutex.Unlock()
+						return true
+					}
+					room.CommunityCards = append(room.CommunityCards, card)
 				}
 				room.GamePhase = "flop"
 				log.Printf("发翻牌，房间 %s", room.ID)
 			}
 			if room.GamePhase == "flop" {
 				// 发转牌
-				room.CommunityCards = append(room.CommunityCards, drawCard(&room.Deck))
+				card, err := drawCard(&room.Deck)
+				if err != nil {
+					log.Printf("发转牌失败（全押）: %v，房间 %s", err, room.ID)
+					room.Mutex.Unlock()
+					return true
+				}
+				room.CommunityCards = append(room.CommunityCards, card)
 				room.GamePhase = "turn"
 				log.Printf("发转牌，房间 %s", room.ID)
 			}
 			if room.GamePhase == "turn" {
 				// 发河牌
-				room.CommunityCards = append(room.CommunityCards, drawCard(&room.Deck))
+				card, err := drawCard(&room.Deck)
+				if err != nil {
+					log.Printf("发河牌失败（全押）: %v，房间 %s", err, room.ID)
+					room.Mutex.Unlock()
+					return true
+				}
+				room.CommunityCards = append(room.CommunityCards, card)
 				room.GamePhase = "river"
 				log.Printf("发河牌，房间 %s", room.ID)
 			}
@@ -1191,23 +1225,39 @@ func nextTurn(room *GameRoom) bool {
 				// 如果还没发完所有公共牌，先发完
 				if room.GamePhase == "preflop" {
 					// 发翻牌
-					room.CommunityCards = []Card{
-						drawCard(&room.Deck),
-						drawCard(&room.Deck),
-						drawCard(&room.Deck),
+					for i := 0; i < 3; i++ {
+						card, err := drawCard(&room.Deck)
+						if err != nil {
+							log.Printf("发翻牌失败（无人可行动）: %v，房间 %s", err, room.ID)
+							room.Mutex.Unlock()
+							return true
+						}
+						room.CommunityCards = append(room.CommunityCards, card)
 					}
 					room.GamePhase = "flop"
 					log.Printf("发翻牌，房间 %s", room.ID)
 				}
 				if room.GamePhase == "flop" {
 					// 发转牌
-					room.CommunityCards = append(room.CommunityCards, drawCard(&room.Deck))
+					card, err := drawCard(&room.Deck)
+					if err != nil {
+						log.Printf("发转牌失败（无人可行动）: %v，房间 %s", err, room.ID)
+						room.Mutex.Unlock()
+						return true
+					}
+					room.CommunityCards = append(room.CommunityCards, card)
 					room.GamePhase = "turn"
 					log.Printf("发转牌，房间 %s", room.ID)
 				}
 				if room.GamePhase == "turn" {
 					// 发河牌
-					room.CommunityCards = append(room.CommunityCards, drawCard(&room.Deck))
+					card, err := drawCard(&room.Deck)
+					if err != nil {
+						log.Printf("发河牌失败（无人可行动）: %v，房间 %s", err, room.ID)
+						room.Mutex.Unlock()
+						return true
+					}
+					room.CommunityCards = append(room.CommunityCards, card)
 					room.GamePhase = "river"
 					log.Printf("发河牌，房间 %s", room.ID)
 				}
@@ -1462,7 +1512,7 @@ func (room *GameRoom) startTurnTimer() {
 	playerIndex := room.CurrentTurn
 
 	// 创建新的定时器
-	room.TurnTimer = time.AfterFunc(60*time.Second, func() {
+	room.TurnTimer = time.AfterFunc(TURN_TIMEOUT*time.Second, func() {
 		// 超时处理
 		roomsMutex.RLock()
 		r, exists := rooms[roomID]
@@ -1559,10 +1609,13 @@ func advancePhase(room *GameRoom) {
 	case "preflop":
 		room.GamePhase = "flop"
 		// 发3张公共牌（翻牌）
-		room.CommunityCards = []Card{
-			drawCard(&room.Deck),
-			drawCard(&room.Deck),
-			drawCard(&room.Deck),
+		for i := 0; i < 3; i++ {
+			card, err := drawCard(&room.Deck)
+			if err != nil {
+				log.Printf("发翻牌失败: %v，房间 %s", err, room.ID)
+				return
+			}
+			room.CommunityCards = append(room.CommunityCards, card)
 		}
 		// 重置下注（新的一轮）
 		for _, p := range room.Players {
@@ -1577,7 +1630,12 @@ func advancePhase(room *GameRoom) {
 	case "flop":
 		room.GamePhase = "turn"
 		// 发第4张公共牌（转牌）
-		room.CommunityCards = append(room.CommunityCards, drawCard(&room.Deck))
+		card, err := drawCard(&room.Deck)
+		if err != nil {
+			log.Printf("发转牌失败: %v，房间 %s", err, room.ID)
+			return
+		}
+		room.CommunityCards = append(room.CommunityCards, card)
 		// 重置下注
 		for _, p := range room.Players {
 			p.Bet = 0
@@ -1591,7 +1649,12 @@ func advancePhase(room *GameRoom) {
 	case "turn":
 		room.GamePhase = "river"
 		// 发第5张公共牌（河牌）
-		room.CommunityCards = append(room.CommunityCards, drawCard(&room.Deck))
+		card, err := drawCard(&room.Deck)
+		if err != nil {
+			log.Printf("发河牌失败: %v，房间 %s", err, room.ID)
+			return
+		}
+		room.CommunityCards = append(room.CommunityCards, card)
 		// 重置下注
 		for _, p := range room.Players {
 			p.Bet = 0
@@ -1813,7 +1876,7 @@ func determineWinner(room *GameRoom) {
 					waitingPlayer.IsSmall = false
 					waitingPlayer.IsBig = false
 					if waitingPlayer.Chips == 0 {
-						waitingPlayer.Chips = 1000 // 给新玩家初始筹码
+						waitingPlayer.Chips = INITIAL_CHIPS // 给新玩家初始筹码
 					}
 					log.Printf("等待玩家 %s 已加入游戏，房间 %s，当前玩家数: %d", waitingPlayer.Name, r.ID, len(r.Players))
 				}
@@ -1884,10 +1947,15 @@ func shuffleDeck(deck []Card) {
 	})
 }
 
-func drawCard(deck *[]Card) Card {
+// drawCard 从牌组中抽取一张牌
+// 返回抽取的牌和错误信息（如果牌组为空）
+func drawCard(deck *[]Card) (Card, error) {
+	if len(*deck) == 0 {
+		return Card{}, fmt.Errorf("deck is empty, cannot draw card")
+	}
 	card := (*deck)[0]
 	*deck = (*deck)[1:]
-	return card
+	return card, nil
 }
 
 func findPlayerRoom(player *Player) *GameRoom {
@@ -2007,7 +2075,7 @@ func buyHand(player *Player, msg *Message) {
 		for i, p := range room.WaitingPlayers {
 			if p.ID == player.ID {
 				// 给等待玩家增加筹码
-				room.WaitingPlayers[i].Chips += 500
+				room.WaitingPlayers[i].Chips += BUY_IN_AMOUNT
 				newChips := room.WaitingPlayers[i].Chips
 				log.Printf("等待玩家 %s 买一手，筹码: %d", player.Name, newChips)
 				room.Mutex.Unlock()
@@ -2030,7 +2098,7 @@ func buyHand(player *Player, msg *Message) {
 	}
 
 	// 增加筹码
-	room.Players[playerIndex].Chips += 500
+	room.Players[playerIndex].Chips += BUY_IN_AMOUNT
 	newChips := room.Players[playerIndex].Chips
 	log.Printf("玩家 %s 买一手，筹码: %d", player.Name, newChips)
 
